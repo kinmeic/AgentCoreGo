@@ -1,0 +1,42 @@
+server:
+  host: "0.0.0.0"
+  port: 8900
+  auth_token: "${AUTH_TOKEN}"
+
+llm:
+  base_url: "https://api.openai.com/v1"
+  api_key: "${LLM_API_KEY}"
+  model: "gpt-4o"
+  context_window: 128000
+  max_tool_iterations: 15
+  max_retries: 3
+  temperature: 0.7
+
+embedding:
+  base_url: "https://api.openai.com/v1"
+  api_key: "${EMBEDDING_API_KEY}"
+  model: "text-embedding-3-small"
+  dimensions: 1536
+
+store:
+  db_path: "./data/agent.db"
+  vector_backend: "sqlite-vec"
+
+workspace:
+  path: "./workspace"
+  soul_file: "SOUL.md"
+
+compression:
+  threshold_percent: 0.50
+  protect_first_n: 3
+  protect_last_n: 20
+  target_ratio: 0.20
+
+tools:
+  work_dir: "./workspace"
+  approval_mode: "smart"
+
+memory:
+  capacity_limit: 200
+  consolidation_threshold: 160
+  auto_nudge: true
