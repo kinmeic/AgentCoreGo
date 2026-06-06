@@ -41,6 +41,19 @@ type LLMConfig struct {
 	MaxToolIterations int    `yaml:"max_tool_iterations"`
 	MaxRetries       int     `yaml:"max_retries"`
 	Temperature      float64 `yaml:"temperature"`
+
+	// Failover providers (optional). If set, base_url/api_key/model are the primary.
+	Fallbacks []FallbackProvider `yaml:"fallbacks"`
+}
+
+// FallbackProvider defines a fallback LLM provider.
+type FallbackProvider struct {
+	Name          string  `yaml:"name"`
+	BaseURL       string  `yaml:"base_url"`
+	APIKey        string  `yaml:"api_key"`
+	Model         string  `yaml:"model"`
+	ContextWindow int     `yaml:"context_window"`
+	Temperature   float64 `yaml:"temperature"`
 }
 
 type EmbeddingConfig struct {

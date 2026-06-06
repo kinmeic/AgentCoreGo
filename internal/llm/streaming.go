@@ -2,6 +2,7 @@ package llm
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -72,11 +73,23 @@ type funcDelta struct {
 }
 
 // parseSSEStream reads an SSE stream and sends parsed chunks to the channel.
-func parseSSEStream(reader io.Reader, ch chan<- StreamChunk) {
+// The context is checked on every send to prevent goroutine leaks if the caller stops reading.
+func parseSSEStream(ctx context.Context, reader io.Reader, ch chan<- StreamChunk) {
 	scanner := bufio.NewScanner(reader)
 	// Increase buffer size for large chunks
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
+
+	// sendChunk sends a chunk to the channel, respecting context cancellation.
+	// Returns false if the context was cancelled (caller should stop).
+	sendChunk := func(chunk StreamChunk) bool {
+		select {
+		case ch <- chunk:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -93,18 +106,22 @@ func parseSSEStream(reader io.Reader, ch chan<- StreamChunk) {
 
 		var resp streamResponse
 		if err := json.Unmarshal([]byte(data), &resp); err != nil {
-			ch <- StreamChunk{Err: fmt.Errorf("parse stream chunk: %w", err)}
+			if !sendChunk(StreamChunk{Err: fmt.Errorf("parse stream chunk: %w", err)}) {
+				return
+			}
 			continue
 		}
 
 		// Handle usage-only chunks (final chunk with include_usage)
 		if resp.Usage != nil && len(resp.Choices) == 0 {
-			ch <- StreamChunk{
+			if !sendChunk(StreamChunk{
 				Usage: &StreamUsage{
 					PromptTokens:     resp.Usage.PromptTokens,
 					CompletionTokens: resp.Usage.CompletionTokens,
 					TotalTokens:      resp.Usage.TotalTokens,
 				},
+			}) {
+				return
 			}
 			continue
 		}
@@ -148,11 +165,13 @@ func parseSSEStream(reader io.Reader, ch chan<- StreamChunk) {
 				}
 			}
 
-			ch <- chunk
+			if !sendChunk(chunk) {
+				return
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		ch <- StreamChunk{Err: fmt.Errorf("read stream: %w", err)}
+		sendChunk(StreamChunk{Err: fmt.Errorf("read stream: %w", err)})
 	}
 }

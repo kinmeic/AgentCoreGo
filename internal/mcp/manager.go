@@ -93,8 +93,9 @@ func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) error {
 		return fmt.Errorf("unsupported transport: %s", cfg.Transport)
 	}
 
-	// Create context for this connection
-	connCtx, cancel := context.WithCancel(ctx)
+	// Create context for this connection — decouple from caller's context
+	// so the connection outlives the initial Connect() call
+	connCtx, cancel := context.WithCancel(context.Background())
 
 	// Connect and discover tools based on transport
 	tools, err := m.connectTransport(connCtx, cfg.Name, cfg.Transport, transportConfig)

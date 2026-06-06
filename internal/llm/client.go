@@ -14,10 +14,14 @@ import (
 )
 
 // Client provides access to an OpenAI-compatible LLM API.
+// It implements the Provider interface.
 type Client struct {
 	cfg        config.LLMConfig
 	httpClient *http.Client
 }
+
+// Verify Client implements Provider at compile time.
+var _ Provider = (*Client)(nil)
 
 // NewClient creates a new LLM client.
 func NewClient(cfg config.LLMConfig) *Client {
@@ -28,6 +32,15 @@ func NewClient(cfg config.LLMConfig) *Client {
 		},
 	}
 }
+
+// Name returns the provider identifier.
+func (c *Client) Name() string { return "openai" }
+
+// ModelName returns the model being used.
+func (c *Client) ModelName() string { return c.cfg.Model }
+
+// MaxContextWindow returns the maximum context window in tokens.
+func (c *Client) MaxContextWindow() int { return c.cfg.ContextWindow }
 
 // completionRequest is the request body for the chat completions API.
 type completionRequest struct {
@@ -187,8 +200,11 @@ func (c *Client) CompleteStream(ctx context.Context, messages []model.Message, t
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read error response (status %d): %w", resp.StatusCode, readErr)
+		}
 		return nil, classifyError(resp.StatusCode, body)
 	}
 
@@ -196,7 +212,7 @@ func (c *Client) CompleteStream(ctx context.Context, messages []model.Message, t
 	go func() {
 		defer close(ch)
 		defer resp.Body.Close()
-		parseSSEStream(resp.Body, ch)
+		parseSSEStream(ctx, resp.Body, ch)
 	}()
 
 	return ch, nil
@@ -236,9 +252,13 @@ func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*htt
 
 		// Retry on rate limit or server errors
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			body, _ := io.ReadAll(resp.Body)
+			body, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			lastErr = classifyError(resp.StatusCode, body)
+			if readErr != nil {
+				lastErr = fmt.Errorf("read error response (status %d): %w", resp.StatusCode, readErr)
+			} else {
+				lastErr = classifyError(resp.StatusCode, body)
+			}
 			continue
 		}
 

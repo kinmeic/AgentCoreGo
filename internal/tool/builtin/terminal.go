@@ -14,16 +14,18 @@ import (
 
 // TerminalTool executes shell commands.
 type TerminalTool struct {
-	workDir      string
-	workspaceDir string
-	timeout      time.Duration
+	workDir         string
+	workspaceDir    string
+	timeout         time.Duration
+	processRegistry *tool.ProcessRegistry
 }
 
-func NewTerminalTool(workDir string) *TerminalTool {
+func NewTerminalTool(workDir string, processRegistry *tool.ProcessRegistry) *TerminalTool {
 	return &TerminalTool{
-		workDir:      workDir,
-		workspaceDir: workDir,
-		timeout:      120 * time.Second,
+		workDir:         workDir,
+		workspaceDir:    workDir,
+		timeout:         120 * time.Second,
+		processRegistry: processRegistry,
 	}
 }
 
@@ -90,6 +92,13 @@ func (t *TerminalTool) Execute(ctx context.Context, args map[string]any) (string
 		cmd.Dir = workDir
 	}
 
+	// Register process for lifecycle tracking
+	var procID string
+	if t.processRegistry != nil {
+		procID = t.processRegistry.Register(cmd, "run_terminal", "", timeout)
+		defer t.processRegistry.Unregister(procID)
+	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -101,7 +110,10 @@ func (t *TerminalTool) Execute(ctx context.Context, args map[string]any) (string
 		result.WriteString("STDOUT:\n")
 		output := stdout.String()
 		if len(output) > 10000 {
-			output = output[:10000] + "\n... (truncated)"
+			runes := []rune(output)
+			if len(runes) > 10000 {
+				output = string(runes[:10000]) + "\n... (truncated)"
+			}
 		}
 		result.WriteString(output)
 	}
@@ -112,7 +124,10 @@ func (t *TerminalTool) Execute(ctx context.Context, args map[string]any) (string
 		result.WriteString("STDERR:\n")
 		output := stderr.String()
 		if len(output) > 5000 {
-			output = output[:5000] + "\n... (truncated)"
+			runes := []rune(output)
+			if len(runes) > 5000 {
+				output = string(runes[:5000]) + "\n... (truncated)"
+			}
 		}
 		result.WriteString(output)
 	}
@@ -124,8 +139,9 @@ func (t *TerminalTool) Execute(ctx context.Context, args map[string]any) (string
 		if result.Len() == 0 {
 			return "", fmt.Errorf("command failed: %w", err)
 		}
-		// Return output even on error (e.g., non-zero exit code with useful output)
-		return result.String(), nil
+		// Return output with exit status AND error so callers know command failed
+		result.WriteString(fmt.Sprintf("\n[exit status: %v]", err))
+		return result.String(), fmt.Errorf("command failed (exit %v)", err)
 	}
 
 	if result.Len() == 0 {

@@ -86,9 +86,12 @@ func classifyError(statusCode int, body []byte) *APIError {
 		apiErr.Message = string(body)
 	}
 
-	// Truncate long messages
+	// Truncate long messages (safe UTF-8 boundary)
 	if len(apiErr.Message) > 500 {
-		apiErr.Message = apiErr.Message[:500] + "..."
+		runes := []rune(apiErr.Message)
+		if len(runes) > 500 {
+			apiErr.Message = string(runes[:500]) + "..."
+		}
 	}
 
 	switch statusCode {

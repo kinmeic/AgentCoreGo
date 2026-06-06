@@ -75,6 +75,11 @@ type StreamEvent struct {
 	Reply          string     `json:"reply,omitempty"`
 	Usage          *UsageInfo `json:"usage,omitempty"`
 	Message        string     `json:"message,omitempty"`
+
+	// Clarify fields (emitted when type == "clarify")
+	ClarifyKind    string   `json:"clarify_kind,omitempty"`
+	ClarifyMessage string   `json:"clarify_message,omitempty"`
+	ClarifyOptions []string `json:"clarify_options,omitempty"`
 }
 
 // Action represents a recorded tool action taken during the conversation.

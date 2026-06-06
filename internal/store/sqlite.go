@@ -31,6 +31,11 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
+	// SQLite only supports one concurrent writer even in WAL mode.
+	// Limit pool to 1 connection to serialize writes and prevent "database is locked" errors.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
 	store := &SQLite{db: db}
 	if err := store.migrate(); err != nil {
 		db.Close()
@@ -107,6 +112,12 @@ func (s *SQLite) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_agent_memories_category ON agent_memories(category)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_memories_enabled ON agent_memories(enabled)`,
 		`CREATE INDEX IF NOT EXISTS idx_vector_store_source ON vector_store(source_type, source_id)`,
+		`CREATE TABLE IF NOT EXISTS checkpoints (
+			conversation_id TEXT PRIMARY KEY,
+			data JSON NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -343,6 +354,21 @@ func (s *SQLite) GetMemories(category string, enabled *bool, limit int) ([]*mode
 	return memories, rows.Err()
 }
 
+// GetMemory retrieves a single memory by ID.
+func (s *SQLite) GetMemory(id int64) (*model.Memory, error) {
+	var mem model.Memory
+	err := s.db.QueryRow(
+		`SELECT id, content, category, source, importance, enabled, created_at, updated_at FROM agent_memories WHERE id = ?`, id,
+	).Scan(&mem.ID, &mem.Content, &mem.Category, &mem.Source, &mem.Importance, &mem.Enabled, &mem.CreatedAt, &mem.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &mem, nil
+}
+
 // UpdateMemory updates an existing memory.
 func (s *SQLite) UpdateMemory(mem *model.Memory) error {
 	_, err := s.db.Exec(
@@ -399,5 +425,34 @@ func (s *SQLite) GetMCPServers() ([]*model.MCPServer, error) {
 // DeleteMCPServer removes an MCP server configuration.
 func (s *SQLite) DeleteMCPServer(name string) error {
 	_, err := s.db.Exec(`DELETE FROM mcp_servers WHERE name = ?`, name)
+	return err
+}
+
+// --- Checkpoint Operations ---
+
+// SaveCheckpointData saves checkpoint data for a conversation.
+func (s *SQLite) SaveCheckpointData(convID string, data []byte) error {
+	now := time.Now()
+	_, err := s.db.Exec(
+		`INSERT INTO checkpoints (conversation_id, data, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT(conversation_id) DO UPDATE SET data = ?, created_at = ?`,
+		convID, data, now, data, now,
+	)
+	return err
+}
+
+// LoadCheckpointData loads checkpoint data for a conversation.
+func (s *SQLite) LoadCheckpointData(convID string) ([]byte, error) {
+	var data []byte
+	err := s.db.QueryRow(`SELECT data FROM checkpoints WHERE conversation_id = ?`, convID).Scan(&data)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return data, err
+}
+
+// DeleteCheckpointData removes checkpoint data for a conversation.
+func (s *SQLite) DeleteCheckpointData(convID string) error {
+	_, err := s.db.Exec(`DELETE FROM checkpoints WHERE conversation_id = ?`, convID)
 	return err
 }

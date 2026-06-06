@@ -10,8 +10,10 @@ import (
 
 // Registry manages all available tools from different sources.
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]*RegisteredTool
+	mu             sync.RWMutex
+	tools          map[string]*RegisteredTool
+	policyCheck    func(toolName string, args map[string]any) error // Optional policy check
+	version        int64                                            // Incremented on Register/Unregister
 }
 
 // NewRegistry creates a new tool registry.
@@ -30,6 +32,7 @@ func (r *Registry) Register(provider Provider, source Source, origin string) {
 		Source:   source,
 		Origin:   origin,
 	}
+	r.version++
 }
 
 // Unregister removes a tool from the registry by name.
@@ -37,17 +40,30 @@ func (r *Registry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tools, name)
+	r.version++
 }
 
 // UnregisterByOrigin removes all tools from a specific origin (e.g., when an MCP server disconnects).
 func (r *Registry) UnregisterByOrigin(source Source, origin string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	changed := false
 	for name, rt := range r.tools {
 		if rt.Source == source && rt.Origin == origin {
 			delete(r.tools, name)
+			changed = true
 		}
 	}
+	if changed {
+		r.version++
+	}
+}
+
+// Version returns the current registry version, incremented on every Register/Unregister.
+func (r *Registry) Version() int64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.version
 }
 
 // Get returns a registered tool by name.
@@ -108,13 +124,28 @@ func (r *Registry) ToolDefinitions() []model.ToolDefinition {
 func (r *Registry) Dispatch(ctx context.Context, name string, args map[string]any) (string, error) {
 	r.mu.RLock()
 	rt, ok := r.tools[name]
+	policyCheck := r.policyCheck
 	r.mu.RUnlock()
 
 	if !ok {
 		return "", fmt.Errorf("tool not found: %s", name)
 	}
 
+	// Apply policy check if configured
+	if policyCheck != nil {
+		if err := policyCheck(name, args); err != nil {
+			return "", fmt.Errorf("blocked by policy: %w", err)
+		}
+	}
+
 	return rt.Provider.Execute(ctx, args)
+}
+
+// SetPolicyCheck sets an optional policy check function that runs before tool execution.
+func (r *Registry) SetPolicyCheck(check func(toolName string, args map[string]any) error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.policyCheck = check
 }
 
 // Count returns the number of registered tools.

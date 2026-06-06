@@ -6,6 +6,7 @@ import (
 	"agent-core/internal/mcp"
 	"agent-core/internal/memory"
 	"agent-core/internal/model"
+	"agent-core/internal/security"
 	"agent-core/internal/store"
 	"agent-core/internal/tool"
 	"context"
@@ -57,6 +58,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/chat", s.handleChatSync)
 	s.mux.HandleFunc("POST /v1/chat/stream", s.handleChatStream)
 	s.mux.HandleFunc("POST /v1/chat/{id}/stop", s.handleChatStop)
+	s.mux.HandleFunc("POST /v1/chat/{id}/clarify", s.handleChatClarify)
 
 	// Conversation management
 	s.mux.HandleFunc("GET /v1/conversations", s.handleListConversations)
@@ -167,6 +169,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	for event := range events {
 		if err := sse.WriteEvent(event); err != nil {
 			log.Printf("[server] SSE write error: %v", err)
+			// Drain remaining events to prevent producer goroutine from blocking
+			go func() {
+				for range events {
+				}
+			}()
 			return
 		}
 	}
@@ -176,6 +183,20 @@ func (s *Server) handleChatStop(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	stopped := s.orchestrator.Stop(id)
 	respondJSON(w, http.StatusOK, map[string]bool{"stopped": stopped})
+}
+
+func (s *Server) handleChatClarify(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Response string `json:"response"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	delivered := s.orchestrator.RespondClarify(id, body.Response)
+	respondJSON(w, http.StatusOK, map[string]bool{"delivered": delivered})
 }
 
 // --- Conversation Handlers ---
@@ -250,7 +271,15 @@ func (s *Server) handleUpdateConversation(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	conv, _ := s.store.GetConversation(id)
+	conv, err := s.store.GetConversation(id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if conv == nil {
+		respondError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
 	respondJSON(w, http.StatusOK, conv)
 }
 
@@ -334,6 +363,30 @@ func (s *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validation (mirror create endpoint)
+	if mem.Content == "" {
+		respondError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+	if mem.Importance < 0 || mem.Importance > 1 {
+		respondError(w, http.StatusBadRequest, "importance must be between 0 and 1")
+		return
+	}
+	if mem.Category == "" {
+		mem.Category = "fact"
+	}
+
+	// Check existence
+	existing, err := s.store.GetMemory(id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil {
+		respondError(w, http.StatusNotFound, "memory not found")
+		return
+	}
+
 	mem.ID = id
 	if err := s.memService.Update(r.Context(), &mem); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -391,6 +444,12 @@ func (s *Server) handleRegisterTool(w http.ResponseWriter, r *http.Request) {
 
 	if reg.Name == "" || reg.CallbackURL == "" {
 		respondError(w, http.StatusBadRequest, "name and callback_url are required")
+		return
+	}
+
+	// Validate callback URL against SSRF rules
+	if err := security.CheckURL(reg.CallbackURL); err != nil {
+		respondError(w, http.StatusBadRequest, "callback_url blocked: "+err.Error())
 		return
 	}
 
