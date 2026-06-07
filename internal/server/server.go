@@ -92,6 +92,9 @@ func (s *Server) Handler() http.Handler {
 	if s.cfg.Server.AuthToken != "" {
 		return s.authMiddleware(s.mux)
 	}
+	// No auth token configured — log a warning
+	log.Printf("[server] WARNING: AUTH_TOKEN is not set, API is running without authentication. "+
+		"This is only safe when bound to 127.0.0.1 (current: %s)", s.cfg.Server.Host)
 	return s.mux
 }
 

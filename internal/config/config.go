@@ -76,8 +76,9 @@ type CompressionConfig struct {
 }
 
 type ToolsConfig struct {
-	WorkDir      string `yaml:"work_dir"`
-	ApprovalMode string `yaml:"approval_mode"`
+	WorkDir        string `yaml:"work_dir"`
+	ApprovalMode   string `yaml:"approval_mode"`
+	TerminalEnabled bool  `yaml:"terminal_enabled"`
 }
 
 type MemoryConfig struct {
@@ -90,7 +91,7 @@ type MemoryConfig struct {
 func DefaultConfig() Config {
 	return Config{
 		Server: ServerConfig{
-			Host: "0.0.0.0",
+			Host: "127.0.0.1", // Default to loopback; use 0.0.0.0 only with AUTH_TOKEN
 			Port: 8900,
 		},
 		LLM: LLMConfig{
@@ -121,8 +122,9 @@ func DefaultConfig() Config {
 			TargetRatio:      0.20,
 		},
 		Tools: ToolsConfig{
-			WorkDir:      "./workspace",
-			ApprovalMode: "smart",
+			WorkDir:        "./workspace",
+			ApprovalMode:   "smart",
+			TerminalEnabled: true, // WARNING: terminal is NOT a true sandbox; disable for production
 		},
 		Memory: MemoryConfig{
 			CapacityLimit:          200,
@@ -224,6 +226,51 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Tools.WorkDir = filepath.Join(wd, cfg.Tools.WorkDir)
 		}
 	}
+}
+
+// ValidateMode determines which validation rules to apply.
+type ValidateMode int
+
+const (
+	// ModeHTTP validates for HTTP server mode (checks network binding + auth).
+	ModeHTTP ValidateMode = iota
+	// ModeMCP validates for MCP server mode (stdio, no network binding checks).
+	ModeMCP
+)
+
+// Validate checks the configuration for security and correctness issues.
+// The mode parameter determines which rules apply (HTTP vs MCP).
+// Returns an error if the configuration is invalid.
+func (c *Config) Validate(mode ValidateMode) error {
+	if mode == ModeHTTP {
+		// Enforce AUTH_TOKEN when binding to non-loopback addresses
+		host := c.Server.Host
+		isLoopback := host == "127.0.0.1" || host == "localhost" || host == "::1" || host == ""
+		if !isLoopback && c.Server.AuthToken == "" {
+			return fmt.Errorf(
+				"security: binding to non-loopback address %q requires AUTH_TOKEN to be set; "+
+					"use host: 127.0.0.1 for local-only access, or set AUTH_TOKEN for network access",
+				host,
+			)
+		}
+
+		// Terminal is not a true sandbox — enforce extra caution on non-loopback
+		if !isLoopback && c.Tools.TerminalEnabled {
+			return fmt.Errorf(
+				"security: terminal tool is enabled while binding to non-loopback address %q; "+
+					"the terminal executes commands with the process's full OS permissions and is NOT sandboxed. "+
+					"Set tools.terminal_enabled: false for network-exposed deployments, or use container/OS isolation",
+				host,
+			)
+		}
+	}
+
+	// Common validations (both modes)
+	if c.Workspace.Path == "" {
+		return fmt.Errorf("workspace.path is required")
+	}
+
+	return nil
 }
 
 // Addr returns the listen address for the HTTP server.

@@ -17,9 +17,21 @@ func DefaultPolicies() []Policy {
 						"rm -rf /*",
 						"mkfs",
 						"dd if=/dev/zero of=/dev/",
-						":(){:|:&};:",  // fork bomb
-						"chmod -R 777 /",
+						":(){:|:&};:", // fork bomb
+						"chmod -r 777 /",
 					},
+				},
+			},
+		},
+		{
+			Name:     "audit-all-terminal-commands",
+			Effect:   EffectAudit,
+			Resource: ResourceTerminal,
+			Conditions: []Condition{
+				{
+					Field:    "operation",
+					Operator: "equals",
+					Values:   []string{"execute"},
 				},
 			},
 		},
@@ -36,7 +48,7 @@ func DefaultPolicies() []Policy {
 			},
 		},
 		{
-			Name:     "deny-curl-pipe-sh",
+			Name:     "audit-pipe-to-shell",
 			Effect:   EffectAudit,
 			Resource: ResourceTerminal,
 			Conditions: []Condition{

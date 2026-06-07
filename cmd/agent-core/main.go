@@ -45,6 +45,11 @@ func main() {
 		log.Fatalf("[agent-core] Failed to load config: %v", err)
 	}
 
+	// Validate configuration (security checks for HTTP server mode)
+	if err := cfg.Validate(config.ModeHTTP); err != nil {
+		log.Fatalf("[agent-core] Config validation failed: %v", err)
+	}
+
 	// Ensure workspace directory and SOUL.md exist
 	if err := sandbox.EnsureWorkspace(cfg.Workspace.Path); err != nil {
 		log.Fatalf("[agent-core] Failed to create workspace: %v", err)
@@ -90,7 +95,7 @@ func main() {
 	toolRegistry.SetPolicyCheck(func(toolName string, args map[string]any) error {
 		action := security.Action{
 			Resource:  resourceForTool(toolName),
-			Operation: "execute",
+			Operation: operationForTool(toolName),
 			Target:    extractTarget(toolName, args),
 		}
 		decision := policyEngine.Evaluate(action)
@@ -101,7 +106,11 @@ func main() {
 	})
 
 	// Register builtin tools
-	builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry)
+	builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry, cfg.Tools.TerminalEnabled)
+	if cfg.Tools.TerminalEnabled {
+		log.Printf("[agent-core] WARNING: terminal tool is enabled — it is NOT a true sandbox. " +
+			"For production, set tools.terminal_enabled: false and use container/OS isolation.")
+	}
 	log.Printf("[agent-core] Registered %d builtin tools", toolRegistry.Count())
 
 	// Initialize MCP manager
@@ -245,7 +254,7 @@ func printBanner(cfg config.Config) {
 // resourceForTool maps a tool name to a security resource type.
 func resourceForTool(toolName string) security.Resource {
 	switch toolName {
-	case "read_file", "write_file", "list_dir":
+	case "read_file", "write_file", "list_files":
 		return security.ResourceFile
 	case "run_terminal":
 		return security.ResourceTerminal
@@ -258,10 +267,30 @@ func resourceForTool(toolName string) security.Resource {
 	}
 }
 
+// operationForTool maps a tool name to the operation type for policy evaluation.
+func operationForTool(toolName string) string {
+	switch toolName {
+	case "read_file", "list_files":
+		return "read"
+	case "write_file":
+		return "write"
+	case "run_terminal":
+		return "execute"
+	case "web_fetch":
+		return "fetch"
+	case "save_memory":
+		return "write"
+	case "search_memory":
+		return "read"
+	default:
+		return "execute"
+	}
+}
+
 // extractTarget extracts the target string from tool arguments for policy evaluation.
 func extractTarget(toolName string, args map[string]any) string {
 	switch toolName {
-	case "read_file", "write_file", "list_dir":
+	case "read_file", "write_file", "list_files":
 		if path, ok := args["path"].(string); ok {
 			return path
 		}
@@ -291,10 +320,32 @@ func runMCPServer() {
 		os.Exit(1)
 	}
 
+	// Validate configuration (MCP mode: skip network binding checks)
+	if err := cfg.Validate(config.ModeMCP); err != nil {
+		fmt.Fprintf(os.Stderr, "Config validation failed: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Minimal initialization for MCP server mode (no DB, no LLM needed)
 	toolRegistry := tool.NewRegistry()
 	processRegistry := tool.NewProcessRegistry()
-	builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry)
+
+	// Initialize security policy engine (same as HTTP mode)
+	policyEngine := security.NewPolicyEngine(nil)
+	toolRegistry.SetPolicyCheck(func(toolName string, args map[string]any) error {
+		action := security.Action{
+			Resource:  resourceForTool(toolName),
+			Operation: operationForTool(toolName),
+			Target:    extractTarget(toolName, args),
+		}
+		decision := policyEngine.Evaluate(action)
+		if !decision.Allowed {
+			return fmt.Errorf("%s", decision.Reason)
+		}
+		return nil
+	})
+
+	builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry, cfg.Tools.TerminalEnabled)
 
 	// Restore MCP connections to include their tools
 	var mcpManager *mcp.Manager

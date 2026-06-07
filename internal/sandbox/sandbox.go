@@ -19,8 +19,14 @@ func ValidatePath(requestedPath, workspaceDir string, forWrite bool) (string, er
 		resolved = filepath.Clean(filepath.Join(workspaceDir, requestedPath))
 	}
 
+	// Ensure workspace itself is resolved
+	evalWorkspace, err := filepath.EvalSymlinks(workspaceDir)
+	if err != nil {
+		evalWorkspace = workspaceDir
+	}
+
 	// For write operations, the target file may not exist yet.
-	// Validate the parent directory instead.
+	// Validate the parent directory and check if the target is a symlink.
 	if forWrite {
 		parent := filepath.Dir(resolved)
 		evaluatedParent, err := filepath.EvalSymlinks(parent)
@@ -28,7 +34,30 @@ func ValidatePath(requestedPath, workspaceDir string, forWrite bool) (string, er
 			// Parent doesn't exist - will be created, validate what we can
 			evaluatedParent = parent
 		}
-		resolved = filepath.Join(evaluatedParent, filepath.Base(resolved))
+
+		// Check if the target file already exists and is a symlink
+		// This prevents writing through symlinks that point outside the workspace
+		targetPath := filepath.Join(evaluatedParent, filepath.Base(resolved))
+		if info, err := os.Lstat(targetPath); err == nil {
+			// File exists — check if it's a symlink
+			if info.Mode()&os.ModeSymlink != 0 {
+				// It's a symlink — resolve it and validate the target
+				symlinkTarget, err := filepath.EvalSymlinks(targetPath)
+				if err != nil {
+					return "", fmt.Errorf("failed to resolve symlink %q: %w", requestedPath, err)
+				}
+				// Check if the symlink target is within workspace
+				if !isInsideWorkspace(symlinkTarget, evalWorkspace) {
+					return "", fmt.Errorf("path %q is a symlink pointing outside the workspace directory", requestedPath)
+				}
+				// Symlink points inside workspace — use the resolved target
+				resolved = symlinkTarget
+			} else {
+				resolved = targetPath
+			}
+		} else {
+			resolved = targetPath
+		}
 	} else {
 		// For read/list, the file should exist - resolve symlinks
 		evaluated, err := filepath.EvalSymlinks(resolved)
@@ -36,12 +65,6 @@ func ValidatePath(requestedPath, workspaceDir string, forWrite bool) (string, er
 			resolved = evaluated
 		}
 		// If EvalSymlinks fails (file doesn't exist), use the cleaned path
-	}
-
-	// Ensure workspace itself is resolved
-	evalWorkspace, err := filepath.EvalSymlinks(workspaceDir)
-	if err != nil {
-		evalWorkspace = workspaceDir
 	}
 
 	// Check that resolved path is within workspace

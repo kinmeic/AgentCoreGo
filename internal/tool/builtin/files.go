@@ -115,7 +115,12 @@ func (t *FileWriteTool) Execute(_ context.Context, args map[string]any) (string,
 		return "", fmt.Errorf("create directories: %w", err)
 	}
 
-	flag := os.O_WRONLY | os.O_CREATE
+	// Re-check for symlink immediately before open (narrows TOCTOU window)
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing to write: %s is a symlink", path)
+	}
+
+	flag := os.O_WRONLY | os.O_CREATE | openFlagsNoFollow
 	if appendMode, _ := args["append"].(bool); appendMode {
 		flag |= os.O_APPEND
 	} else {
@@ -124,9 +129,19 @@ func (t *FileWriteTool) Execute(_ context.Context, args map[string]any) (string,
 
 	f, err := os.OpenFile(path, flag, 0o644)
 	if err != nil {
+		// On Unix, O_NOFOLLOW returns ELOOP if the path is a symlink.
+		if isSymlinkError(err) {
+			return "", fmt.Errorf("refusing to write: %s is a symlink (O_NOFOLLOW)", path)
+		}
 		return "", fmt.Errorf("open file: %w", err)
 	}
 	defer f.Close()
+
+	// Post-open verification: confirm the opened file is a regular file, not a symlink.
+	// f.Stat() follows symlinks, but os.Lstat on the path should agree.
+	if linfo, err := os.Lstat(path); err == nil && linfo.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing to write: %s became a symlink after open", path)
+	}
 
 	n, err := f.WriteString(content)
 	if err != nil {

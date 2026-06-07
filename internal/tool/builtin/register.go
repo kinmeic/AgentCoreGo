@@ -2,13 +2,19 @@ package builtin
 
 import (
 	"agent-core/internal/tool"
+	"log"
 )
 
 // RegisterAll registers all builtin tools into the given registry.
-func RegisterAll(registry *tool.Registry, workDir string, processRegistry *tool.ProcessRegistry) {
+// If terminalEnabled is false, the run_terminal tool is skipped.
+func RegisterAll(registry *tool.Registry, workDir string, processRegistry *tool.ProcessRegistry, terminalEnabled bool) {
 	// Core tools
 	registry.Register(NewTimeTool(), tool.SourceBuiltin, "builtin")
-	registry.Register(NewTerminalTool(workDir, processRegistry), tool.SourceBuiltin, "builtin")
+	if terminalEnabled {
+		registry.Register(NewTerminalTool(workDir, processRegistry), tool.SourceBuiltin, "builtin")
+	} else {
+		log.Printf("[tools] Terminal tool DISABLED (tools.terminal_enabled=false)")
+	}
 	registry.Register(NewFileReadTool(workDir), tool.SourceBuiltin, "builtin")
 	registry.Register(NewFileWriteTool(workDir), tool.SourceBuiltin, "builtin")
 	registry.Register(NewFileListTool(workDir), tool.SourceBuiltin, "builtin")

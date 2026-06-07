@@ -10,7 +10,7 @@ func DefaultToolsets() map[string]*Toolset {
 			Tools: []string{
 				"read_file",
 				"write_file",
-				"list_dir",
+				"list_files",
 				"run_terminal",
 				"get_current_time",
 			},
@@ -54,7 +54,7 @@ func CoreToolNames() []string {
 	return []string{
 		"read_file",
 		"write_file",
-		"list_dir",
+		"list_files",
 		"run_terminal",
 		"get_current_time",
 		// Bridge tools are also always exposed
