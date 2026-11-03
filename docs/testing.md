@@ -50,6 +50,19 @@ go build -trimpath ./cmd/agent-core
 
 端到端输出包含 `BINARY_E2E_0_3_PASS` 和 `status=completed`。与真实模型效果、Docker 镜像运行和多租户隔离相关的限制仍适用，未因新增功能而消除。
 
+## 0.3.1 ZCode 同步修复验收（2026-11-03）
+
+对照 ZCode v3.17.2 的权限与诊断修复，新增并实际通过：
+
+- Explore 继承父会话当前 mode、恢复时重算 mode 的回归测试。
+- Plan 下只读/需审批/内置写操作边界，以及只读 Git 查询与危险 shell 命令分类。
+- 动态 shell hand-off、参数不识别为 shell、插件未知变量不展开为空串。
+- Bash 会话环境变量注入与宿主 API key 不泄漏。
+- 真实 stdio MCP 启动失败的 stderr 脱敏摘要。
+- 全部包的标准测试、race detector、vet、构建和配置校验。
+
+未移植插件 Marketplace、桌面 app-server/V4、resident pool、浏览器/CUA 或 Node/TypeScript Workflow；这些不属于 AgentCore 的 Go 单租户服务定位。
+
 ## 未在本次环境验收
 
 - Windows 和 Linux 的实际运行、路径与进程树行为；Windows `taskkill /T` 仅实现并参与源码编译路径，未在 Windows 执行。

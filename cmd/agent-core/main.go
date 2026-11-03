@@ -336,7 +336,12 @@ func main() {
 	// 2. Shutdown HTTP server (stops accepting new requests, waits for in-flight)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
-	httpServer.Shutdown(shutdownCtx)
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[agent-core] Grace period elapsed; continuing to wait for actual request drain: %v", err)
+		if err := httpServer.Shutdown(context.Background()); err != nil {
+			log.Printf("[agent-core] HTTP shutdown failed: %v", err)
+		}
+	}
 
 	// 3. Disconnect MCP servers and kill subprocesses
 	mcpManager.DisconnectAll()

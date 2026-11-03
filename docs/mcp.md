@@ -26,6 +26,8 @@ AgentCore 使用官方 `github.com/modelcontextprotocol/go-sdk` v1.8.0。客户�
 
 命令使用参数数组而非 shell。环境仅继承 PATH/HOME/临时目录等白名单，再叠加显式 `env`。关闭时先关会话，再清理进程组；服务异常退出会摘除该来源工具。
 
+stdio 启动失败会保留最近 4 KiB stderr，经过 ANSI/secret 脱敏后附带最多 512 字符摘要；`/v1/mcp` 返回 `status: failed` 和可选 `error`。HTTP/SSE 不附带 stdio 信息，错误不改变协议分类或重试行为。
+
 ## streamable HTTP
 
 ```json

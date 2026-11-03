@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,10 +31,36 @@ func TestCustomCommandDiscoveryAndExpansion(t *testing.T) {
 	}
 }
 
-func TestDynamicShellFailsClosed(t *testing.T) {
-	command := Command{Name: "unsafe"}
-	if _, err := Expand(command, "Run !`rm -rf /`", ""); !errors.Is(err, ErrDynamicShell) {
-		t.Fatalf("expected dynamic shell rejection, got %v", err)
+func TestDynamicShellIsHandedOffWithoutExecution(t *testing.T) {
+	command := Command{Name: "unsafe", Scope: ScopeProject, Source: SourceZCode}
+	expansion, err := Expand(command, "Run !`printf '%s' \"$HOME\"`", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(expansion.Expanded, "/unsafe (project/zcode)") || !strings.Contains(expansion.Expanded, "```bash") || !strings.Contains(expansion.Expanded, "$HOME") {
+		t.Fatalf("unexpected hand-off: %q", expansion.Expanded)
+	}
+}
+
+func TestArgumentTextIsNotInterpretedAsShellBlock(t *testing.T) {
+	command := Command{Name: "review", Scope: ScopeProject, Source: SourceZCode}
+	expansion, err := Expand(command, "Review $ARGUMENTS", "hello !`rm -rf /tmp/x`")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(expansion.Expanded, "This shell step comes from") {
+		t.Fatalf("argument text was incorrectly treated as a shell block: %q", expansion.Expanded)
+	}
+}
+
+func TestPluginVariableIsNotExpandedToEmptyString(t *testing.T) {
+	command := Command{Name: "unsafe", Scope: ScopeProject, Source: SourceZCode}
+	expansion, err := Expand(command, "Run !`bash ${CLAUDE_PLUGIN_ROOT}/x.sh`", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(expansion.Expanded, "was not run") || !strings.Contains(expansion.Expanded, "CLAUDE_PLUGIN_ROOT") {
+		t.Fatalf("unresolved variable was not preserved: %q", expansion.Expanded)
 	}
 }
 

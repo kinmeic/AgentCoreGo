@@ -19,7 +19,7 @@ import (
 	"strings"
 )
 
-const agentCoreVersion = "0.3.0"
+const agentCoreVersion = "0.3.1"
 
 type apiClient struct {
 	baseURL string

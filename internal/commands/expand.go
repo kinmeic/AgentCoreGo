@@ -8,11 +8,7 @@ import (
 	"unicode"
 )
 
-var (
-	dynamicInlineShell = regexp.MustCompile("!`[^`]*`")
-	dynamicFencedShell = regexp.MustCompile("(?s)```!\\s*.*?```")
-	positionalArgument = regexp.MustCompile(`\$(\d+)`)
-)
+var positionalArgument = regexp.MustCompile(`\$(\d+)`)
 
 // Expand loads and safely expands a custom markdown command.
 func (l *Loader) Expand(name, args string) (Expansion, error) {
@@ -23,11 +19,9 @@ func (l *Loader) Expand(name, args string) (Expansion, error) {
 	return Expand(command, raw, args)
 }
 
-// Expand substitutes only static argument placeholders. Dynamic shell is rejected.
+// Expand rewrites shell blocks as untrusted hand-off notes before substituting arguments.
 func Expand(command Command, raw, args string) (Expansion, error) {
-	if dynamicInlineShell.MatchString(raw) || dynamicFencedShell.MatchString(raw) {
-		return Expansion{}, ErrDynamicShell
-	}
+	raw, _ = handOffShellBlocks(raw, command)
 	args = strings.TrimSpace(args)
 	positional := SplitArguments(args)
 	used := strings.Contains(raw, "$ARGUMENTS")

@@ -33,7 +33,7 @@ revoke → 删除当前 bundle 或全部授权
 模型可调用 `agent` 工具：
 
 - `general-purpose`：独立子 Agent。
-- `Explore`：plan 模式的只读子 Agent。
+- `Explore`：继承父会话当前 mode 的只读子 Agent；恢复时也会重算父会话最新 mode，shell 命令按只读规则判定，危险命令仍需审批或拒绝。
 - `run_in_background`：立即返回 run ID，之后查询状态。
 
 子 run 具有独立消息、预算、trace/root/parent/depth 和 checkpoint。默认禁止递归 spawn，depth 上限防止无限扩张；取消按 exact run 传播，不误杀兄弟任务。子代理不能扩大父级授权，交互审批不可用时副作用工具失败关闭。

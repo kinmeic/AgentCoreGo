@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-core/internal/model"
+	"agent-core/internal/security"
 
 	"github.com/google/uuid"
 )
@@ -64,7 +65,7 @@ func (m *PermissionManager) Authorize(ctx context.Context, registered *Registere
 	if registered == nil {
 		return errors.New("tool is not registered")
 	}
-	caps := registered.Capabilities
+	caps := effectiveCapabilities(registered, args)
 	info, hasInfo := ExecutionInfoFromContext(ctx)
 	mode := m.mode
 	if hasInfo && info.Mode != "" {
@@ -176,11 +177,31 @@ func redactPreviewValue(value any) any {
 	}
 }
 
+func effectiveCapabilities(registered *RegisteredTool, args map[string]any) Capabilities {
+	caps := registered.Capabilities
+	if registered.Provider.Name() == "run_terminal" {
+		if command, ok := args["command"].(string); ok && security.IsReadOnlyShellCommand(command) {
+			caps.ReadOnly = true
+			caps.Destructive = false
+			caps.NeedsApproval = false
+			caps.SideEffectScope = "workspace"
+			caps.RiskLevel = "low"
+		}
+	}
+	return caps
+}
+
 func (m *PermissionManager) decisionForMode(mode string, caps Capabilities) string {
 	switch mode {
 	case "plan":
 		if caps.ReadOnly {
-			return "allow"
+			if !caps.NeedsApproval {
+				return "allow"
+			}
+			return "ask"
+		}
+		if caps.SideEffectScope == "external" {
+			return m.decisionForMode("build", caps)
 		}
 		return "deny"
 	case "edit":

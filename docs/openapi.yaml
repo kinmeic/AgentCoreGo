@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: AgentCore API
-  version: 0.3.0
+  version: 0.3.1
   description: Single-tenant AgentCore HTTP and SSE API. All endpoints except /health require bearer auth when configured.
 servers:
   - url: http://127.0.0.1:8900

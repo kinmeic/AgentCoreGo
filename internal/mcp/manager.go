@@ -22,6 +22,7 @@ type Manager struct {
 	mu         sync.RWMutex
 	clients    map[string]*clientConn
 	connecting map[string]bool
+	failures   map[string]string
 	registry   *tool.Registry
 }
 
@@ -31,6 +32,7 @@ type clientConn struct {
 	config    json.RawMessage
 	session   *sdk.ClientSession
 	command   *exec.Cmd
+	stderr    *stderrBuffer
 	cancel    context.CancelFunc
 	tools     []string
 }
@@ -74,10 +76,10 @@ func RestoreConfig(name, transport string, data []byte) ServerConfig {
 }
 
 func NewManager(registry *tool.Registry) *Manager {
-	return &Manager{clients: make(map[string]*clientConn), connecting: make(map[string]bool), registry: registry}
+	return &Manager{clients: make(map[string]*clientConn), connecting: make(map[string]bool), failures: make(map[string]string), registry: registry}
 }
 
-func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) error {
+func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) (err error) {
 	if cfg.Name == "" || strings.ContainsAny(cfg.Name, "\x00\r\n") {
 		return fmt.Errorf("valid MCP server name is required")
 	}
@@ -98,7 +100,12 @@ func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) error {
 	handshakeCtx, handshakeCancel := context.WithCancel(connCtx)
 	conn := &clientConn{name: cfg.Name, transport: cfg.Transport, config: cfg.Config,
 		cancel: func() { handshakeCancel(); cancel() }}
-	client := sdk.NewClient(&sdk.Implementation{Name: "agent-core", Version: "0.3.0"},
+	defer func() {
+		if err != nil {
+			m.recordFailure(conn, err)
+		}
+	}()
+	client := sdk.NewClient(&sdk.Implementation{Name: "agent-core", Version: "0.3.1"},
 		&sdk.ClientOptions{Capabilities: &sdk.ClientCapabilities{}, KeepAlive: 30 * time.Second})
 	transport, command, err := m.transport(connCtx, cfg)
 	if err != nil {
@@ -106,6 +113,10 @@ func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) error {
 		return err
 	}
 	conn.command = command
+	if command != nil {
+		conn.stderr = &stderrBuffer{}
+		command.Stderr = conn.stderr
+	}
 	handshakeDone := make(chan struct{})
 	go func() {
 		select {
@@ -142,6 +153,7 @@ func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) error {
 	conn.tools = registered
 	m.mu.Lock()
 	m.clients[cfg.Name] = conn
+	delete(m.failures, cfg.Name)
 	m.mu.Unlock()
 	go m.watch(conn)
 	log.Printf("[mcp] connected %s transport=%s tools=%d", cfg.Name, cfg.Transport, len(registered))
@@ -226,7 +238,7 @@ func (m *Manager) discoverTools(ctx context.Context, conn *clientConn) ([]tool.P
 }
 
 func (m *Manager) watch(conn *clientConn) {
-	_ = conn.session.Wait()
+	waitErr := conn.session.Wait()
 	m.mu.Lock()
 	current := m.clients[conn.name]
 	if current == conn {
@@ -239,6 +251,9 @@ func (m *Manager) watch(conn *clientConn) {
 			_ = tool.KillProcess(conn.command)
 		}
 		conn.cancel()
+		if waitErr != nil {
+			m.recordFailure(conn, waitErr)
+		}
 		log.Printf("[mcp] session closed: %s", conn.name)
 	}
 }
@@ -260,6 +275,7 @@ func (m *Manager) Disconnect(name string) error {
 		return fmt.Errorf("MCP server %q not connected", name)
 	}
 	delete(m.clients, name)
+	delete(m.failures, name)
 	m.mu.Unlock()
 	m.registry.UnregisterByOrigin(tool.SourceMCP, name)
 	return closeConnection(conn)
@@ -277,6 +293,24 @@ func (m *Manager) DisconnectAll() {
 		m.registry.UnregisterByOrigin(tool.SourceMCP, conn.name)
 		_ = closeConnection(conn)
 	}
+	m.mu.Lock()
+	m.failures = make(map[string]string)
+	m.mu.Unlock()
+}
+
+func (m *Manager) recordFailure(conn *clientConn, cause error) {
+	if conn == nil || cause == nil {
+		return
+	}
+	message := cause.Error()
+	if conn.stderr != nil {
+		if recent := conn.stderr.summary(); recent != "" {
+			message += "\n\n" + recent
+		}
+	}
+	m.mu.Lock()
+	m.failures[conn.name] = sanitizeMCPError(message)
+	m.mu.Unlock()
 }
 
 func (m *Manager) ListServers() []ServerInfo {
@@ -284,7 +318,10 @@ func (m *Manager) ListServers() []ServerInfo {
 	defer m.mu.RUnlock()
 	result := make([]ServerInfo, 0, len(m.clients))
 	for _, conn := range m.clients {
-		result = append(result, ServerInfo{Name: conn.name, Transport: conn.transport, ToolCount: len(conn.tools), Tools: append([]string(nil), conn.tools...)})
+		result = append(result, ServerInfo{Name: conn.name, Transport: conn.transport, Status: "connected", ToolCount: len(conn.tools), Tools: append([]string(nil), conn.tools...)})
+	}
+	for name, message := range m.failures {
+		result = append(result, ServerInfo{Name: name, Status: "failed", Error: message})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result
@@ -293,6 +330,8 @@ func (m *Manager) ListServers() []ServerInfo {
 type ServerInfo struct {
 	Name      string   `json:"name"`
 	Transport string   `json:"transport"`
+	Status    string   `json:"status"`
+	Error     string   `json:"error,omitempty"`
 	ToolCount int      `json:"tool_count"`
 	Tools     []string `json:"tools"`
 }

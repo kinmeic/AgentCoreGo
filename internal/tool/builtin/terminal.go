@@ -6,8 +6,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -97,15 +100,15 @@ func (t *TerminalTool) Execute(ctx context.Context, args map[string]any) (string
 		cmd.Dir = workDir
 	}
 
+	info, _ := tool.ExecutionInfoFromContext(ctx)
+	cmd.Env = terminalEnvironment(info, t.workspaceDir)
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	// Register only after Start publishes cmd.Process, then wait concurrently with cancellation.
-	convID := ""
-	if info, ok := tool.ExecutionInfoFromContext(ctx); ok {
-		convID = info.ConversationID
-	}
+	convID := info.ConversationID
 	var procID string
 	startErr := cmd.Start()
 	if startErr == nil && t.processRegistry != nil {
@@ -164,4 +167,29 @@ func (t *TerminalTool) Execute(ctx context.Context, args map[string]any) (string
 	}
 
 	return result.String(), nil
+}
+
+func terminalEnvironment(info tool.ExecutionInfo, workspace string) []string {
+	values := make(map[string]string)
+	for _, key := range []string{"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "TMPDIR"} {
+		if value := os.Getenv(key); value != "" {
+			values[key] = value
+		}
+	}
+	for _, key := range []string{"CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "ZCODE_SESSION_ID"} {
+		values[key] = info.ConversationID
+	}
+	workspace = filepath.ToSlash(workspace)
+	values["CLAUDE_PROJECT_DIR"] = workspace
+	values["ZCODE_PROJECT_DIR"] = workspace
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, key+"="+values[key])
+	}
+	return result
 }

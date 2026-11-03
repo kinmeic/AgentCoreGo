@@ -63,7 +63,11 @@ skills: [code-review]
 附加范围：$ARGUMENTS
 ```
 
-支持 `$ARGUMENTS`、`$1` 到 `$N` 和引号参数；无占位符时追加 `User arguments`。内置命令优先，自定义命令不能覆盖内置名称。动态 `` !`command` `` 和 fenced `!` shell 默认拒绝；`@file` 必须走 workspace 文件服务，不允许借此访问目录外内容。
+支持 `$ARGUMENTS`、`$1` 到 `$N` 和引号参数；无占位符时追加 `User arguments`。内置命令优先，自定义命令不能覆盖内置名称。
+
+动态 `` !`command` `` 和 fenced `!` 块只在模板阶段改写为带来源的 hand-off note + fenced bash，**解析时不执行**。执行由模型通过普通 `run_terminal` 完成，仍受 Plan、审批、超时、进程组和 trace 约束。参数文本不会被识别为 shell 块；无法解析的插件变量返回 not-run 说明而不是空串。`@file` 必须走 workspace 文件服务，不允许借此访问目录外内容。
+
+Bash 环境包含 `CLAUDE_CODE_SESSION_ID`、`CLAUDE_SESSION_ID`、`ZCODE_SESSION_ID`（conversation ID）与 `CLAUDE_PROJECT_DIR`、`ZCODE_PROJECT_DIR`（固定 workspace root），其余环境采用白名单，不继承宿主机 API key。
 
 ## Skills
 

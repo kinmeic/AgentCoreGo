@@ -74,12 +74,14 @@ func (m *Manager) childSpec(parentRunID string, request Request) (model.RunSpec,
 		return model.RunSpec{}, "", fmt.Errorf("unknown subagent type %q", kind)
 	}
 	spec := parent.Spec
+	if conversation, err := m.store.GetConversation(parent.ConversationID); err == nil && conversation != nil {
+		if currentMode := conversation.Metadata["mode"]; currentMode != "" {
+			spec.Mode = currentMode
+		}
+	}
 	spec.ParentRunID = parent.ID
 	spec.Depth = parent.Spec.Depth + 1
 	spec.Kind = model.RunKindSubagent
-	if kind == "Explore" {
-		spec.Mode = "plan"
-	}
 	return spec, uuid.NewString(), nil
 }
 
