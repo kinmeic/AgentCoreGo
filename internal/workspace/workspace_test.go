@@ -88,6 +88,42 @@ func TestWriteFileRequiresRevision(t *testing.T) {
 	}
 }
 
+func TestWriteRejectsInvalidTextAndCancellationBeforeMutation(t *testing.T) {
+	for _, content := range [][]byte{[]byte("binary\x00data"), {0xff}, []byte("valid")} {
+		service, root := newTestService(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		if string(content) == "valid" {
+			cancel()
+		}
+		_, err := service.WriteFile(ctx, "new.txt", content, WriteOptions{})
+		cancel()
+		if err == nil {
+			t.Fatalf("invalid write succeeded: %q", content)
+		}
+		if _, err := os.Lstat(filepath.Join(root, "new.txt")); !os.IsNotExist(err) {
+			t.Fatalf("rejected write mutated workspace: %v", err)
+		}
+	}
+}
+
+func TestGitStatusParsesRenamesWithSpaces(t *testing.T) {
+	service, root := newTestService(t)
+	runGitTest(t, root, "init", "-q")
+	runGitTest(t, root, "config", "user.email", "test@example.com")
+	runGitTest(t, root, "config", "user.name", "Test")
+	writeTestFile(t, filepath.Join(root, "old name.txt"), "original")
+	runGitTest(t, root, "add", ".")
+	runGitTest(t, root, "commit", "-qm", "initial")
+	runGitTest(t, root, "mv", "old name.txt", "new name.txt")
+	status, err := service.GitStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Staged) != 1 || status.Staged[0].Path != "new name.txt" || status.Staged[0].OldPath != "old name.txt" {
+		t.Fatalf("bad rename: %#v", status)
+	}
+}
+
 func TestGitStatusDiffAndLog(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git unavailable")

@@ -42,6 +42,18 @@ func TestDynamicShellIsHandedOffWithoutExecution(t *testing.T) {
 	}
 }
 
+func TestShellHandoffExtractsOnlyTheCommand(t *testing.T) {
+	for _, body := range []string{"Run !`printf hello`", "Run\n```!\nprintf hello\n```"} {
+		expansion, err := Expand(Command{Name: "test", Scope: ScopeProject, Source: SourceZCode}, body, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(expansion.Expanded, "```bash\nprintf hello\n```") || !strings.HasPrefix(expansion.Expanded, "Run") {
+			t.Fatalf("malformed shell handoff: %q", expansion.Expanded)
+		}
+	}
+}
+
 func TestArgumentTextIsNotInterpretedAsShellBlock(t *testing.T) {
 	command := Command{Name: "review", Scope: ScopeProject, Source: SourceZCode}
 	expansion, err := Expand(command, "Review $ARGUMENTS", "hello !`rm -rf /tmp/x`")

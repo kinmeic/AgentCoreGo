@@ -10,6 +10,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -86,6 +88,9 @@ func (e *Engine) Start(ctx context.Context, definition Definition) (*RunView, er
 
 // Resume replays scheduling while reusing completed nodes with matching input hashes.
 func (e *Engine) Resume(ctx context.Context, runID string) (*RunView, error) {
+	if !e.cfg.Features.Workflow || !e.cfg.Workflow.Enabled {
+		return nil, fmt.Errorf("workflow is disabled")
+	}
 	record, err := e.store.WorkflowDefinition(runID)
 	if err != nil || record == nil {
 		return nil, fmt.Errorf("workflow run not found")
@@ -97,13 +102,12 @@ func (e *Engine) Resume(ctx context.Context, runID string) (*RunView, error) {
 	if err := json.Unmarshal(record.Definition, &definition); err != nil {
 		return nil, err
 	}
+	if err := definition.Validate(e.cfg.Workflow.MaxNodes); err != nil {
+		return nil, err
+	}
 	top, err := e.store.GetRun(runID)
 	if err != nil || top == nil {
 		return nil, fmt.Errorf("workflow run metadata not found")
-	}
-	record.Status = "running"
-	if err := e.store.SaveWorkflow(record); err != nil {
-		return nil, err
 	}
 	return e.execute(ctx, top, record, definition)
 }
@@ -112,6 +116,10 @@ func (e *Engine) execute(parent context.Context, top *model.Run, record *store.W
 	ctx, cancel := context.WithTimeout(parent, time.Duration(e.cfg.Workflow.TimeoutSeconds)*time.Second)
 	defer cancel()
 	e.mu.Lock()
+	if _, exists := e.active[record.ID]; exists {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("workflow is already running")
+	}
 	e.active[record.ID] = cancel
 	e.mu.Unlock()
 	defer func() {
@@ -119,7 +127,31 @@ func (e *Engine) execute(parent context.Context, top *model.Run, record *store.W
 		delete(e.active, record.ID)
 		e.mu.Unlock()
 	}()
-	previous, _ := e.store.WorkflowNodeRecords(record.ID)
+	record.Status = "running"
+	if err := e.store.SaveWorkflow(record); err != nil {
+		return nil, err
+	}
+	top.Status, top.FinishedAt = model.RunStatusRunning, nil
+	if err := e.store.SaveRun(top); err != nil {
+		return nil, err
+	}
+	finish := func(status string) (*RunView, error) {
+		record.Status = status
+		top.Status = map[string]model.RunStatus{"completed": model.RunStatusCompleted, "failed": model.RunStatusFailed, "cancelled": model.RunStatusCancelled}[status]
+		now := time.Now()
+		top.FinishedAt = &now
+		if err := e.store.SaveRun(top); err != nil {
+			return nil, err
+		}
+		if err := e.store.SaveWorkflow(record); err != nil {
+			return nil, err
+		}
+		return e.view(record)
+	}
+	previous, err := e.store.WorkflowNodeRecords(record.ID)
+	if err != nil {
+		return nil, err
+	}
 	cache := make(map[string]json.RawMessage)
 	attempts := make(map[string]int)
 	for _, node := range previous {
@@ -127,13 +159,13 @@ func (e *Engine) execute(parent context.Context, top *model.Run, record *store.W
 			attempts[node.NodeID] = node.Attempt
 		}
 		if node.Status == "completed" {
-			cache[node.InputHash] = node.Result
+			cache[node.NodeID+"\x00"+node.InputHash] = node.Result
 		}
 	}
 	tasks := make(map[string]task)
 	for _, node := range definition.Nodes {
 		if len(node.Items) == 0 {
-			tasks[node.ID] = task{key: node.ID, node: node, attempt: attempts[node.ID] + 1}
+			tasks[node.ID] = task{key: node.ID, node: node, args: cloneArgs(node.Args), attempt: attempts[node.ID] + 1}
 			continue
 		}
 		for index, item := range node.Items {
@@ -144,13 +176,20 @@ func (e *Engine) execute(parent context.Context, top *model.Run, record *store.W
 		}
 	}
 	status := make(map[string]string)
+	for key := range tasks {
+		status[key] = ""
+	}
 	outputs := make(map[string]json.RawMessage)
-	var agentCalls atomic.Int32
-	for len(status) < len(tasks) {
+	var agentCalls atomic.Int64
+	for _, saved := range previous {
+		if current, ok := tasks[saved.NodeID]; ok && current.node.Type == "agent" {
+			agentCalls.Add(1)
+		}
+	}
+	remaining := len(tasks)
+	for remaining > 0 {
 		if err := ctx.Err(); err != nil {
-			record.Status = "cancelled"
-			_ = e.store.SaveWorkflow(record)
-			return e.view(record)
+			return finish("cancelled")
 		}
 		var ready []task
 		progress := false
@@ -158,19 +197,25 @@ func (e *Engine) execute(parent context.Context, top *model.Run, record *store.W
 			if status[key] != "" {
 				continue
 			}
-			resolvedPrompt, resolvedArgs := resolveTemplates(current.node, current.args, outputs)
-			current.prompt, current.args = resolvedPrompt, resolvedArgs
-			hashInput, _ := json.Marshal(map[string]any{"node": current.node.ID, "prompt": current.prompt, "args": current.args, "item": current.args["_item"]})
-			digest := sha256.Sum256(hashInput)
-			current.hash = hex.EncodeToString(digest[:])
-			tasks[key] = current
 			decision := dependencyDecision(current.node, status)
 			if decision == "skipped" {
 				status[key] = decision
+				remaining--
 				progress = true
 				continue
 			}
 			if decision == "ready" {
+				current.prompt, current.args = resolveTemplates(current.node, current.args, outputs)
+				// Preserve existing hashes for previously completed tasks whose
+				// effective inputs did not change. Scope cache entries by task ID
+				// so identical fan-out items cannot borrow each other's results.
+				var hashArgs any = current.args
+				if len(current.args) == 0 {
+					hashArgs = nil
+				}
+				hashInput, _ := json.Marshal(map[string]any{"node": current.node.ID, "prompt": current.prompt, "args": hashArgs, "item": current.args["_item"]})
+				digest := sha256.Sum256(hashInput)
+				current.hash = hex.EncodeToString(digest[:])
 				ready = append(ready, current)
 			}
 		}
@@ -188,9 +233,7 @@ func (e *Engine) execute(parent context.Context, top *model.Run, record *store.W
 			if !unfinished {
 				break
 			}
-			record.Status = "failed"
-			_ = e.store.SaveWorkflow(record)
-			return e.view(record)
+			return finish("failed")
 		}
 		limit := e.cfg.Workflow.MaxConcurrency
 		if limit > len(ready) {
@@ -200,8 +243,9 @@ func (e *Engine) execute(parent context.Context, top *model.Run, record *store.W
 		results := make(chan taskResult, len(ready))
 		var wg sync.WaitGroup
 		for _, current := range ready {
-			if cached, ok := cache[current.hash]; ok {
+			if cached, ok := cache[current.key+"\x00"+current.hash]; ok {
 				status[current.key] = "completed"
+				remaining--
 				outputs[current.key] = cached
 				progress = true
 				continue
@@ -219,26 +263,28 @@ func (e *Engine) execute(parent context.Context, top *model.Run, record *store.W
 		close(results)
 		for result := range results {
 			status[result.task.key] = result.status
+			remaining--
 			if result.err == nil {
 				outputs[result.task.key] = result.output
 			}
 		}
 	}
-	record.Status = "completed"
+	if ctx.Err() != nil {
+		return finish("cancelled")
+	}
+	finalStatus := "completed"
 	for _, state := range status {
 		if state == "failed" {
-			record.Status = "failed"
+			finalStatus = "failed"
 			break
 		}
 	}
-	if err := e.store.SaveWorkflow(record); err != nil {
-		return nil, err
-	}
-	return e.view(record)
+	return finish(finalStatus)
 }
 
 func dependencyDecision(node Node, status map[string]string) string {
 	failed := false
+	skipped := false
 	for _, dependency := range node.DependsOn {
 		states := []string{status[dependency]}
 		if states[0] == "" {
@@ -259,6 +305,9 @@ func dependencyDecision(node Node, status map[string]string) string {
 			if state == "failed" {
 				failed = true
 			}
+			if state == "skipped" {
+				skipped = true
+			}
 		}
 	}
 	if failed && node.Condition != "on_failure" && node.Condition != "always" {
@@ -267,26 +316,34 @@ func dependencyDecision(node Node, status map[string]string) string {
 	if !failed && node.Condition == "on_failure" {
 		return "skipped"
 	}
+	if skipped && !failed && node.Condition != "always" {
+		return "skipped"
+	}
 	return "ready"
 }
 
-func (e *Engine) runTask(ctx context.Context, top *model.Run, current task, agentCalls *atomic.Int32) taskResult {
+func (e *Engine) runTask(ctx context.Context, top *model.Run, current task, agentCalls *atomic.Int64) taskResult {
 	result := taskResult{task: current, status: "completed"}
 	var lastErr error
-	for attempt := current.attempt; attempt < current.attempt+current.node.Retry+1; attempt++ {
-		current.attempt = attempt
-		_ = e.store.SaveWorkflowNode(&store.WorkflowNodeRecord{RunID: top.ID, NodeID: current.key,
-			Attempt: attempt, InputHash: current.hash, Status: "running", UpdatedAt: time.Now()})
+	for offset := 0; offset <= current.node.Retry; offset++ {
+		if lastErr = ctx.Err(); lastErr != nil {
+			break
+		}
+		attempt := current.attempt + offset
+		if err := e.store.SaveWorkflowNode(&store.WorkflowNodeRecord{RunID: top.ID, NodeID: current.key,
+			Attempt: attempt, InputHash: current.hash, Status: "running", UpdatedAt: time.Now()}); err != nil {
+			lastErr = err
+			break
+		}
 		callCtx := ctx
+		cancel := func() {}
 		if current.node.TimeoutSeconds > 0 {
-			var cancel context.CancelFunc
 			callCtx, cancel = context.WithTimeout(ctx, time.Duration(current.node.TimeoutSeconds)*time.Second)
-			defer cancel()
 		}
 		var output json.RawMessage
 		switch current.node.Type {
 		case "agent":
-			if agentCalls.Add(1) > int32(e.cfg.Workflow.MaxAgentCalls) {
+			if agentCalls.Add(1) > int64(e.cfg.Workflow.MaxAgentCalls) {
 				lastErr = fmt.Errorf("workflow agent call budget exceeded")
 				break
 			}
@@ -303,17 +360,23 @@ func (e *Engine) runTask(ctx context.Context, top *model.Run, current task, agen
 		case "tool":
 			info := tool.ExecutionInfo{ConversationID: top.ConversationID, RunID: top.ID, ToolCallID: current.key,
 				Mode: top.Spec.Mode, Interactive: false}
-			text, err := e.registry.Dispatch(tool.WithExecutionInfo(callCtx, info), current.node.Tool, current.args)
+			args := cloneArgs(current.args)
+			delete(args, "_item")
+			text, err := e.registry.Dispatch(tool.WithExecutionInfo(callCtx, info), current.node.Tool, args)
 			if err != nil {
 				lastErr = err
 			} else {
 				output, _ = json.Marshal(map[string]any{"result": text})
 			}
 		}
+		cancel()
 		if lastErr == nil {
 			result.output = output
-			_ = e.store.SaveWorkflowNode(&store.WorkflowNodeRecord{RunID: top.ID, NodeID: current.key,
-				Attempt: attempt, InputHash: current.hash, Status: "completed", Result: output, UpdatedAt: time.Now()})
+			if err := e.store.SaveWorkflowNode(&store.WorkflowNodeRecord{RunID: top.ID, NodeID: current.key,
+				Attempt: attempt, InputHash: current.hash, Status: "completed", Result: output, UpdatedAt: time.Now()}); err != nil {
+				lastErr = err
+				break
+			}
 			return result
 		}
 		_ = e.store.SaveWorkflowNode(&store.WorkflowNodeRecord{RunID: top.ID, NodeID: current.key,
@@ -328,20 +391,66 @@ func (e *Engine) runTask(ctx context.Context, top *model.Run, current task, agen
 }
 
 func resolveTemplates(node Node, args map[string]any, outputs map[string]json.RawMessage) (string, map[string]any) {
-	prompt := node.Prompt
-	for id, output := range outputs {
+	var replacements []string
+	type fanoutValue struct {
+		index int
+		text  string
+	}
+	groups := make(map[string][]fanoutValue)
+	ids := make([]string, 0, len(outputs))
+	for id := range outputs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
 		var value map[string]any
-		_ = json.Unmarshal(output, &value)
+		_ = json.Unmarshal(outputs[id], &value)
 		for _, key := range []string{"reply", "result"} {
 			if text, ok := value[key].(string); ok {
-				prompt = strings.ReplaceAll(prompt, "{{nodes."+id+"."+key+"}}", text)
+				replacements = append(replacements, "{{nodes."+id+"."+key+"}}", text)
+				if bracket := strings.LastIndexByte(id, '['); bracket >= 0 && strings.HasSuffix(id, "]") {
+					if index, err := strconv.Atoi(id[bracket+1 : len(id)-1]); err == nil {
+						group := id[:bracket] + "." + key
+						groups[group] = append(groups[group], fanoutValue{index: index, text: text})
+					}
+				}
 			}
 		}
 	}
-	if item, ok := args["_item"]; ok {
-		prompt = strings.ReplaceAll(prompt, "{{item}}", fmt.Sprint(item))
+	for group, values := range groups {
+		sort.Slice(values, func(i, j int) bool { return values[i].index < values[j].index })
+		texts := make([]string, len(values))
+		for i, value := range values {
+			texts[i] = value.text
+		}
+		replacements = append(replacements, "{{nodes."+group+"}}", strings.Join(texts, "\n"))
 	}
-	return prompt, args
+	if item, ok := args["_item"]; ok {
+		replacements = append(replacements, "{{item}}", fmt.Sprint(item))
+	}
+	replacer := strings.NewReplacer(replacements...)
+	var expand func(any) any
+	expand = func(value any) any {
+		switch v := value.(type) {
+		case string:
+			return replacer.Replace(v)
+		case map[string]any:
+			result := make(map[string]any, len(v))
+			for key, child := range v {
+				result[key] = expand(child)
+			}
+			return result
+		case []any:
+			result := make([]any, len(v))
+			for i, child := range v {
+				result[i] = expand(child)
+			}
+			return result
+		default:
+			return value
+		}
+	}
+	return replacer.Replace(node.Prompt), expand(args).(map[string]any)
 }
 
 func cloneArgs(args map[string]any) map[string]any {
@@ -384,9 +493,5 @@ func (e *Engine) Cancel(runID string) bool {
 		return false
 	}
 	cancel()
-	if record, _ := e.store.WorkflowDefinition(runID); record != nil {
-		record.Status = "cancelled"
-		_ = e.store.SaveWorkflow(record)
-	}
 	return true
 }

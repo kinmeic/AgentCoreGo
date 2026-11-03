@@ -31,7 +31,7 @@ func TestExploreUsesCurrentParentMode(t *testing.T) {
 	if spec.Mode != "build" {
 		t.Fatalf("Explore inherited stale mode %q", spec.Mode)
 	}
-	if spec.Kind != model.RunKindSubagent || spec.Depth != 1 {
+	if spec.Kind != model.RunKindSubagent || spec.Depth != 1 || !spec.ReadOnly {
 		t.Fatalf("unexpected lineage: %#v", spec)
 	}
 }

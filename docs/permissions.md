@@ -25,6 +25,10 @@
 
 未声明能力的外部 MCP/Host Callback 工具默认按高风险、外部副作用、需要审批处理。MCP annotations 只是不可信提示，不作为授权依据。
 
+Explore 子 run 继承父会话当前 mode，同时保留独立、持久化的只读限制；`edit`、`yolo` 或会话授权都不能解除这项限制。
+
+POSIX 终端仅对保守识别的字面量查询自动采用只读能力，例如 `ls -la`、`cat file.txt`、`rg -n TODO internal`。变量展开、命令替换、环境变量赋值、重定向、换行和未知选项均保留普通终端权限要求。Shell 中的 Git、find、sed、awk、分页器等命令也保留普通终端权限要求，因为它们可能写文件或运行其他程序；只读 Git 查询应使用 `git_readonly`。Windows 的 `cmd.exe` 不使用 POSIX 分类器。
+
 ## 审批生命周期
 
 1. 工具到达 `ask`，生成绑定 conversation/run/tool-call 的 `request_id`。

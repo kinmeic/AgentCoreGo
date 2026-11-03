@@ -58,3 +58,34 @@ func TestArgvGraderRequiresTrust(t *testing.T) {
 		t.Fatal("untrusted argv grader was accepted")
 	}
 }
+
+func TestStartReturnsStableInitialPlan(t *testing.T) {
+	runner, err := NewRunner(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := runner.Start(Manifest{SchemaVersion: 1, Name: "snapshot", BaseURL: "http://127.0.0.1:0", Model: "mock", TimeoutSeconds: 1,
+		Cases: []Case{{ID: "one", Prompt: "test", Expect: Expect{Type: "exact", Value: "unused"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Cancel(plan.ID)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		// Encoding the response must not race with worker updates.
+		if _, err := json.Marshal(plan); err != nil {
+			t.Fatal(err)
+		}
+		current, err := runner.Get(plan.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != "running" {
+			if plan.Status != "running" || len(plan.Results) != 0 {
+				t.Fatalf("worker mutated the returned response: %#v", plan)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("benchmark did not finish")
+}

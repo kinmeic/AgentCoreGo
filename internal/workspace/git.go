@@ -53,11 +53,15 @@ func (s *Service) GitStatus(ctx context.Context) (GitStatus, error) {
 		case strings.HasPrefix(record, "# branch.oid "):
 			result.OID = strings.TrimPrefix(record, "# branch.oid ")
 		case strings.HasPrefix(record, "1 ") || strings.HasPrefix(record, "2 "):
-			fields := strings.SplitN(record, " ", 9)
-			if len(fields) < 9 {
+			fieldCount := 9
+			if record[0] == '2' {
+				fieldCount = 10
+			}
+			fields := strings.SplitN(record, " ", fieldCount)
+			if len(fields) < fieldCount || len(fields[1]) != 2 {
 				continue
 			}
-			status := GitFileStatus{Path: fields[8], X: string(fields[1][0]), Y: string(fields[1][1])}
+			status := GitFileStatus{Path: fields[fieldCount-1], X: string(fields[1][0]), Y: string(fields[1][1])}
 			if record[0] == '2' && i+1 < len(records) {
 				i++
 				status.OldPath = records[i]
@@ -165,10 +169,12 @@ func filepathToGitPath(value string) string {
 func (s *Service) runGit(ctx context.Context, args ...string) (string, error) {
 	commandCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(commandCtx, s.gitPath, args...)
+	commandArgs := []string{"--no-pager", "-c", "core.hooksPath=" + os.DevNull,
+		"-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "log.showSignature=false"}
+	cmd := exec.CommandContext(commandCtx, s.gitPath, append(commandArgs, args...)...)
 	cmd.Dir = s.root
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_OPTIONAL_LOCKS=0",
+		"GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_SYSTEM=" + os.DevNull, "GIT_OPTIONAL_LOCKS=0",
 		"GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "LC_ALL=C"}
 	stdout, stderr := &limitedBuffer{limit: s.maxGitOutputBytes}, &limitedBuffer{limit: 64 * 1024}
 	cmd.Stdout, cmd.Stderr = stdout, stderr

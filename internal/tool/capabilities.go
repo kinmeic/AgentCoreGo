@@ -56,6 +56,7 @@ type ExecutionInfo struct {
 	ToolCallID       string
 	Interactive      bool
 	Mode             string
+	ReadOnly         bool
 	Discovery        *DiscoveryState
 	Emit             func(model.StreamEvent) error
 	OnStatus         func(model.RunStatus)

@@ -8,6 +8,7 @@ import (
 	"agent-core/internal/memory"
 	"agent-core/internal/model"
 	"agent-core/internal/prompt"
+	"agent-core/internal/security"
 	"agent-core/internal/store"
 	"agent-core/internal/tool"
 	"agent-core/internal/tool/builtin"
@@ -24,7 +25,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/xeipuuv/gojsonschema"
 )
 
 // Runner executes and grades isolated benchmark plans.
@@ -68,7 +68,13 @@ func (r *Runner) Start(manifest Manifest) (*Plan, error) {
 	r.mu.Lock()
 	r.active[plan.ID] = cancel
 	r.mu.Unlock()
-	go r.execute(ctx, plan)
+	// The caller may serialize the initial plan while execution updates status
+	// and results. Give the worker a separate record to avoid that data race.
+	executionPlan := *plan
+	go func() {
+		defer cancel()
+		r.execute(ctx, &executionPlan)
+	}()
 	return plan, nil
 }
 
@@ -276,7 +282,7 @@ func grade(ctx context.Context, plan *Plan, item Case, workspace, reply string) 
 		if err := json.Unmarshal([]byte(reply), &value); err != nil {
 			return GraderResult{Passed: false, Error: err.Error()}
 		}
-		result, err := gojsonschema.Validate(gojsonschema.NewGoLoader(expect.Schema), gojsonschema.NewGoLoader(value))
+		result, err := security.ValidateJSONSchema(expect.Schema, value)
 		if err != nil {
 			return GraderResult{Passed: false, Error: err.Error()}
 		}

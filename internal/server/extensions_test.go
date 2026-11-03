@@ -49,6 +49,20 @@ func TestWorkspaceSnapshotHTTP(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRejectsInvalidWritesBeforeMutation(t *testing.T) {
+	server, _ := newServerHarness(t)
+	for _, body := range []string{`{"path":"invalid.txt","content":"\u0000"}`, `{"path":"../outside.txt","content":"blocked"}`} {
+		response := request(t, server, http.MethodPut, "/v1/workspace/files/content", body, "Bearer secret")
+		if response.Code != http.StatusBadRequest && response.Code != http.StatusForbidden {
+			t.Fatalf("invalid write returned %d: %s", response.Code, response.Body.String())
+		}
+	}
+	response := request(t, server, http.MethodGet, "/v1/workspace/files/content?path=invalid.txt", "", "Bearer secret")
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("rejected write created a file: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestWorkflowHTTP(t *testing.T) {
 	server, _ := newServerHarness(t)
 	body := `{"definition":{"schema_version":1,"name":"http-test","nodes":[{"id":"answer","type":"agent","prompt":"answer"}]}}`

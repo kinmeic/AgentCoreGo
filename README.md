@@ -23,7 +23,7 @@
 
 ### 前置条件
 
-- Go **1.26.4**（与 `go.mod` 一致）
+- Go **1.26.10**（与 `go.mod` 一致）
 - CGO 与 C 编译器（SQLite 驱动需要）
 
 Ubuntu 可安装：
@@ -133,6 +133,7 @@ curl -N -X POST "http://127.0.0.1:8900/v1/runs/$RUN_ID/resume" \
 - [CLI](docs/cli.md)
 - [部署、备份与运维](docs/operations.md)
 - [测试与验证边界](docs/testing.md)
+- [2026-11-03 代码审计与修复](docs/audit-2026-11-03.md)
 
 ## 验证
 

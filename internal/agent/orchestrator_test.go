@@ -104,6 +104,35 @@ func TestChatRejectsMissingConversation(t *testing.T) {
 	}
 }
 
+func TestReadOnlyChildRunPersistsConstraintAndRejectsWrites(t *testing.T) {
+	provider := &fakeLLM{completions: []*model.Message{
+		{Role: model.RoleAssistant, ToolCalls: []model.ToolCall{{ID: "write", Type: "function", Function: model.ToolFunction{Name: "write_test", Arguments: "{}"}}}},
+		{Role: model.RoleAssistant, Content: "done"},
+	}}
+	orchestrator, db, registry := newAgentHarness(t, provider)
+	write := &agentTestTool{name: "write_test"}
+	if err := registry.Register(write, tool.SourceBuiltin, "builtin"); err != nil {
+		t.Fatal(err)
+	}
+	permissions := tool.NewPermissionManager("yolo")
+	registry.SetPolicyCheck(func(ctx context.Context, name string, args map[string]any) error {
+		registered, _ := registry.Get(name)
+		return permissions.Authorize(ctx, registered, args)
+	})
+	response, err := orchestrator.StartChildRun(context.Background(), model.ChatRequest{Message: "explore"},
+		model.RunSpec{Mode: "yolo", ReadOnly: true, Kind: model.RunKindSubagent, RootRunID: "parent", ParentRunID: "parent", Depth: 1}, "child", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if write.calls.Load() != 0 {
+		t.Fatal("read-only child executed a mutating tool")
+	}
+	run, err := db.GetRun(response.RunID)
+	if err != nil || !run.Spec.ReadOnly {
+		t.Fatalf("read-only constraint was not persisted: %#v %v", run, err)
+	}
+}
+
 func TestChatStreamPersistsRunAndTerminatesWithDone(t *testing.T) {
 	provider := &fakeLLM{streams: [][]llm.StreamChunk{{{Content: "hel"}, {Content: "lo"}}}}
 	orchestrator, db, _ := newAgentHarness(t, provider)

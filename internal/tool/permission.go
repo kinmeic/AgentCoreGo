@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -67,6 +68,9 @@ func (m *PermissionManager) Authorize(ctx context.Context, registered *Registere
 	}
 	caps := effectiveCapabilities(registered, args)
 	info, hasInfo := ExecutionInfoFromContext(ctx)
+	if hasInfo && info.ReadOnly && !caps.ReadOnly {
+		return fmt.Errorf("permission denied for %s: run is read-only", registered.Provider.Name())
+	}
 	mode := m.mode
 	if hasInfo && info.Mode != "" {
 		mode = info.Mode
@@ -179,7 +183,7 @@ func redactPreviewValue(value any) any {
 
 func effectiveCapabilities(registered *RegisteredTool, args map[string]any) Capabilities {
 	caps := registered.Capabilities
-	if registered.Provider.Name() == "run_terminal" {
+	if registered.Source == SourceBuiltin && registered.Provider.Name() == "run_terminal" && runtime.GOOS != "windows" {
 		if command, ok := args["command"].(string); ok && security.IsReadOnlyShellCommand(command) {
 			caps.ReadOnly = true
 			caps.Destructive = false

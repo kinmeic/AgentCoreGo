@@ -163,6 +163,7 @@ type RunSpec struct {
 	Model          string  `json:"model,omitempty"`
 	Effort         string  `json:"effort,omitempty"`
 	Mode           string  `json:"mode,omitempty"`
+	ReadOnly       bool    `json:"read_only,omitempty"`
 	TraceID        string  `json:"trace_id"`
 	RootRunID      string  `json:"root_run_id"`
 	ParentRunID    string  `json:"parent_run_id,omitempty"`

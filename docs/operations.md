@@ -2,7 +2,7 @@
 
 ## 二进制与 Ubuntu
 
-Go 版本以 `go.mod` 为准（当前 1.26.4），SQLite 驱动需要 CGO：
+Go 版本以 `go.mod` 为准（当前 1.26.10），SQLite 驱动需要 CGO：
 
 ```bash
 sudo apt update

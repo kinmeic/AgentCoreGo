@@ -63,6 +63,16 @@ go build -trimpath ./cmd/agent-core
 
 未移植插件 Marketplace、桌面 app-server/V4、resident pool、浏览器/CUA 或 Node/TypeScript Workflow；这些不属于 AgentCore 的 Go 单租户服务定位。
 
+## 代码审计修复验收（2026-11-03）
+
+本轮环境为 macOS arm64、CGO/SQLite、Go 1.26.10。详细发现见 [审计报告](audit-2026-11-03.md)。
+
+- 模块校验、gofmt、vet、全部标准测试和 race 测试通过。
+- 新增 shell 审批绕过、外部 schema 引用禁止联网/读文件、Explore 只读约束持久化、快照 symlink/hardlink 越界、ignore 保留、损坏 blob/manifest、缺失文件/权限/symlink/空目录冲突的回归测试。
+- 新增 Git fsmonitor 不执行和带空格 rename、Workflow 有界重试/参数模板/聚合/缓存恢复/累计预算、Benchmark 返回记录无竞态、shell hand-off 正文以及 HTTP 拒绝无效写入的回归测试。
+- 原生构建、默认配置和设置测试 AUTH_TOKEN 后的容器配置校验通过；Linux/Windows amd64 无 CGO 交叉构建通过，仅代表编译验证。
+- govulncheck v1.9.0 使用 Go 1.26.10，Darwin/Linux/Windows 三个目标均返回 `No vulnerabilities found`。旧 Go 1.26.4 的标准库告警通过升级工具链处理，x/sys 升至 v0.44.0。
+
 ## 未在本次环境验收
 
 - Windows 和 Linux 的实际运行、路径与进程树行为；Windows `taskkill /T` 仅实现并参与源码编译路径，未在 Windows 执行。

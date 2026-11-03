@@ -9,8 +9,7 @@ import (
 	"unicode/utf8"
 
 	"agent-core/internal/model"
-
-	"github.com/xeipuuv/gojsonschema"
+	"agent-core/internal/security"
 )
 
 // Registry manages all available tools from different sources.
@@ -251,8 +250,7 @@ func (r *Registry) Dispatch(ctx context.Context, name string, args map[string]an
 	if args == nil {
 		args = map[string]any{}
 	}
-	validation, err := gojsonschema.Validate(
-		gojsonschema.NewGoLoader(schemaForProvider(rt.Provider)), gojsonschema.NewGoLoader(args))
+	validation, err := security.ValidateJSONSchema(schemaForProvider(rt.Provider), args)
 	if err != nil {
 		return "", fmt.Errorf("invalid schema for tool %s: %w", name, err)
 	}

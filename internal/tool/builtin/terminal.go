@@ -3,7 +3,6 @@ package builtin
 import (
 	"agent-core/internal/sandbox"
 	"agent-core/internal/tool"
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -103,9 +102,12 @@ func (t *TerminalTool) Execute(ctx context.Context, args map[string]any) (string
 	info, _ := tool.ExecutionInfoFromContext(ctx)
 	cmd.Env = terminalEnvironment(info, t.workspaceDir)
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Bound capture while the process runs, rather than after buffering its
+	// entire output. Keep draining the pipes when the budget is exhausted.
+	stdout := &boundedOutput{maximum: 40_000}
+	stderr := &boundedOutput{maximum: 20_000}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	// Register only after Start publishes cmd.Process, then wait concurrently with cancellation.
 	convID := info.ConversationID

@@ -531,6 +531,10 @@ func respondWorkspaceError(w http.ResponseWriter, err error) {
 	if errors.As(err, &serviceErr) {
 		status := http.StatusBadRequest
 		switch serviceErr.Code {
+		case workspace.CodeInvalidArgument, workspace.CodeNotDirectory, workspace.CodeNotRegularFile, workspace.CodeBinaryFile, workspace.CodeUnsupported:
+			status = http.StatusBadRequest
+		case workspace.CodeOutsideWorkspace:
+			status = http.StatusForbidden
 		case workspace.CodeNotFound:
 			status = http.StatusNotFound
 		case workspace.CodeConflict, workspace.CodeAlreadyExists:

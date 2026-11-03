@@ -1,202 +1,130 @@
 package security
 
-import (
-	"path/filepath"
-	"strings"
-	"unicode"
-)
+import "strings"
 
-// IsReadOnlyShellCommand is a conservative read-only command classifier, not a
-// complete shell parser. Anything uncertain is treated as side-effecting.
+// IsReadOnlyShellCommand recognizes a small literal POSIX shell subset. It is
+// an approval optimization, not a sandbox: anything it cannot prove is a simple
+// query must retain the terminal tool's ordinary approval requirement.
 func IsReadOnlyShellCommand(command string) bool {
-	segments, ok := splitShellSegments(command)
-	if !ok || len(segments) == 0 {
+	commands, ok := literalShellCommands(command)
+	if !ok || len(commands) == 0 {
 		return false
 	}
-	for _, segment := range segments {
-		fields, ok := shellFields(segment)
-		if !ok || len(fields) == 0 {
-			return false
-		}
-		for len(fields) > 0 && isEnvAssignment(fields[0]) {
-			fields = fields[1:]
-		}
-		if len(fields) == 0 || !readOnlyCommand(fields) {
+	for _, fields := range commands {
+		if !readOnlyCommand(fields) {
 			return false
 		}
 	}
 	return true
 }
 
-func splitShellSegments(input string) ([]string, bool) {
-	var segments []string
-	var current strings.Builder
-	var quote rune
-	escaped := false
-	for _, r := range input {
-		if escaped {
-			current.WriteRune(r)
-			escaped = false
-			continue
+func literalShellCommands(input string) ([][]string, bool) {
+	var commands [][]string
+	var fields []string
+	var word strings.Builder
+	var quote byte
+	started := false
+	flush := func() {
+		if started {
+			fields = append(fields, word.String())
+			word.Reset()
+			started = false
 		}
-		if r == '\\' {
-			escaped = true
-			current.WriteRune(r)
-			continue
-		}
-		if quote != 0 {
-			if r == quote {
-				quote = 0
-			}
-			current.WriteRune(r)
-			continue
-		}
-		if r == '\'' || r == '"' || r == '`' {
-			if r == '`' {
-				return nil, false
-			}
-			quote = r
-			current.WriteRune(r)
-			continue
-		}
-		if r == '$' {
-			// Command substitution and process substitution are rejected. Plain
-			// environment expansion such as $HOME or ${HOME} is allowed.
-			// A following '(' or '<' changes the evaluation semantics.
-			current.WriteRune(r)
-			continue
-		}
-		if r == '(' || r == '<' || r == '>' {
+	}
+	for i := 0; i < len(input); i++ {
+		c := input[i]
+		// A newline is a command separator, not argument whitespace.
+		if c == '\n' || c == '\r' || c == 0 {
 			return nil, false
 		}
-		if r == '|' || r == ';' || r == '&' {
-			if current.Len() > 0 {
-				segments = append(segments, current.String())
-				current.Reset()
-			}
-			continue
-		}
-		current.WriteRune(r)
-	}
-	if escaped || quote != 0 {
-		return nil, false
-	}
-	if current.Len() > 0 {
-		segments = append(segments, current.String())
-	}
-	return segments, true
-}
-
-func shellFields(input string) ([]string, bool) {
-	var fields []string
-	var current strings.Builder
-	var quote rune
-	escaped := false
-	flush := func() {
-		if current.Len() > 0 {
-			fields = append(fields, current.String())
-			current.Reset()
-		}
-	}
-	for _, r := range input {
-		if escaped {
-			current.WriteRune(r)
-			escaped = false
-			continue
-		}
-		if r == '\\' {
-			escaped = true
-			current.WriteRune(r)
-			continue
-		}
-		if quote != 0 {
-			if r == quote {
+		if quote == '\'' {
+			if c == quote {
 				quote = 0
+			} else {
+				word.WriteByte(c)
 			}
-			current.WriteRune(r)
 			continue
 		}
-		if r == '\'' || r == '"' {
-			quote = r
-			current.WriteRune(r)
+		// These evaluate code even inside double quotes. Escapes and all
+		// expansions are deliberately left to the normal approval path.
+		if c == '$' || c == '`' || c == '\\' {
+			return nil, false
+		}
+		if quote == '"' {
+			if c == quote {
+				quote = 0
+			} else {
+				word.WriteByte(c)
+			}
 			continue
 		}
-		if unicode.IsSpace(r) {
+		switch c {
+		case '\'', '"':
+			quote, started = c, true
+		case ' ', '\t':
 			flush()
-			continue
+		case '|', '&', ';':
+			flush()
+			if len(fields) == 0 {
+				return nil, false
+			}
+			if c == '&' {
+				if i+1 >= len(input) || input[i+1] != '&' {
+					return nil, false
+				}
+				i++
+			} else if c == '|' && i+1 < len(input) && input[i+1] == '|' {
+				i++
+			}
+			commands = append(commands, fields)
+			fields = nil
+		case '<', '>', '(', ')', '{', '}', '*', '?', '[', ']', '~', '!', '#':
+			return nil, false
+		default:
+			started = true
+			word.WriteByte(c)
 		}
-		current.WriteRune(r)
 	}
-	if escaped || quote != 0 {
+	if quote != 0 {
 		return nil, false
 	}
 	flush()
-	return fields, true
-}
-
-func isEnvAssignment(value string) bool {
-	parts := strings.SplitN(value, "=", 2)
-	if len(parts) != 2 || parts[0] == "" {
-		return false
+	if len(fields) == 0 {
+		return nil, false
 	}
-	for i, r := range parts[0] {
-		if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || (i > 0 && r >= '0' && r <= '9')) {
-			return false
-		}
-	}
-	return true
+	return append(commands, fields), true
 }
 
 func readOnlyCommand(fields []string) bool {
-	name := filepath.Base(fields[0])
-	args := fields[1:]
-	switch name {
-	case "pwd", "ls", "dir", "echo", "printf", "cat", "head", "tail", "wc", "file", "stat",
-		"grep", "egrep", "fgrep", "rg", "cd", "test", "[", "true", "false", "uname", "date",
-		"which", "readlink", "basename", "dirname", "realpath", "du", "df", "uniq", "cut", "tr", "less", "more", "man":
+	// Never match only a basename: /tmp/ls may be an arbitrary executable.
+	switch fields[0] {
+	case "pwd", "ls", "echo", "printf", "cat", "head", "tail", "wc", "stat",
+		"grep", "egrep", "fgrep", "cd", "test", "true", "false", "uname",
+		"which", "readlink", "basename", "dirname", "du", "df", "cut", "tr":
 		return true
-	case "sort":
-		for _, arg := range args {
-			if arg == "-o" || strings.HasPrefix(arg, "--output") {
+	case "rg":
+		for _, arg := range fields[1:] {
+			if arg == "--" {
+				return true
+			}
+			if !strings.HasPrefix(arg, "-") {
+				continue
+			}
+			// rg can execute a preprocessor or hostname command. An allowlist
+			// rejects abbreviated and future command-executing options too.
+			switch arg {
+			case "-n", "-i", "-l", "-L", "-c", "-w", "-F", "-v", "-q", "-s",
+				"--hidden", "--no-ignore", "--files", "--line-number", "--ignore-case",
+				"--fixed-strings", "--files-with-matches", "--count", "--no-heading":
+			default:
 				return false
 			}
 		}
 		return true
-	case "find":
-		for _, arg := range args {
-			if arg == "-delete" || arg == "-exec" || arg == "-execdir" || arg == "-ok" || arg == "-okdir" {
-				return false
-			}
-		}
-		return true
-	case "sed":
-		hasPrintOnly := false
-		for _, arg := range args {
-			if arg == "-n" || strings.HasPrefix(arg, "-n") {
-				hasPrintOnly = true
-			}
-			if arg == "-i" || strings.HasPrefix(arg, "--in-place") {
-				return false
-			}
-		}
-		return hasPrintOnly
-	case "awk":
-		return !strings.Contains(strings.Join(args, " "), "system(")
-	case "command":
-		return len(args) > 0 && args[0] == "-v"
-	case "env", "printenv":
-		return len(args) == 0
-	case "git":
-		if len(args) == 0 {
-			return false
-		}
-		switch args[0] {
-		case "status", "diff", "log", "branch", "show", "rev-parse", "ls-files", "describe", "remote", "tag":
-			return true
-		default:
-			return false
-		}
 	default:
+		// Git queries can run repository fsmonitor/textconv/pager helpers;
+		// use git_readonly for hardened queries. find/sed/awk, pagers, date,
+		// file and sort also have execution or write modes.
 		return false
 	}
 }

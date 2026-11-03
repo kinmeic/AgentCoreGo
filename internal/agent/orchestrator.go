@@ -432,7 +432,7 @@ func (o *Orchestrator) executePendingTools(ctx context.Context, run *model.Run, 
 			toolCtx := tool.WithExecutionInfo(ctx, tool.ExecutionInfo{
 				ConversationID: run.ConversationID, RunID: run.ID, RootRunID: run.Spec.RootRunID,
 				ParentRunID: run.Spec.ParentRunID, TraceID: run.Spec.TraceID, ToolCallID: call.ID, Interactive: interactive,
-				Discovery: cp.Discovery, Mode: run.Spec.Mode, Emit: emitter.emit, OnStatus: func(status model.RunStatus) {
+				Discovery: cp.Discovery, Mode: run.Spec.Mode, ReadOnly: run.Spec.ReadOnly, Emit: emitter.emit, OnStatus: func(status model.RunStatus) {
 					run.Status = status
 					if err := o.store.SaveRun(run); err != nil && statusErr == nil {
 						statusErr = fmt.Errorf("persist run status: %w", err)

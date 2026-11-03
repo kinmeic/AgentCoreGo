@@ -82,6 +82,7 @@ func (m *Manager) childSpec(parentRunID string, request Request) (model.RunSpec,
 	spec.ParentRunID = parent.ID
 	spec.Depth = parent.Spec.Depth + 1
 	spec.Kind = model.RunKindSubagent
+	spec.ReadOnly = spec.ReadOnly || kind == "Explore"
 	return spec, uuid.NewString(), nil
 }
 

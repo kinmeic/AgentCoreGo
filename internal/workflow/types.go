@@ -60,9 +60,18 @@ func (d Definition) Validate(maxNodes int) error {
 		return fmt.Errorf("workflow must contain 1-%d nodes", maxNodes)
 	}
 	seen := make(map[string]bool)
+	expandedNodes := 0
 	for _, node := range d.Nodes {
-		if node.ID == "" || seen[node.ID] {
+		if strings.TrimSpace(node.ID) == "" || strings.ContainsAny(node.ID, "[]") || seen[node.ID] {
 			return fmt.Errorf("duplicate or empty node ID %q", node.ID)
+		}
+		expansion := max(1, len(node.Items))
+		if expansion > maxNodes-expandedNodes {
+			return fmt.Errorf("workflow fan-out exceeds %d tasks", maxNodes)
+		}
+		expandedNodes += expansion
+		if node.TimeoutSeconds < 0 || int64(node.TimeoutSeconds) > (1<<63-1)/1_000_000_000 {
+			return fmt.Errorf("node %s has invalid timeout_seconds", node.ID)
 		}
 		seen[node.ID] = true
 		if node.Type != "agent" && node.Type != "tool" {

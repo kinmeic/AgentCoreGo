@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -95,7 +94,7 @@ func (s *Service) createSnapshot(ctx context.Context) (SnapshotManifest, error) 
 			if info.Size() > s.maxSnapshotFileBytes || total > s.maxSnapshotTotalBytes {
 				return newError(op, CodeTooLarge, relative, "snapshot byte budget exceeded")
 			}
-			digest, err := s.storeBlob(path)
+			digest, err := s.storeBlob(ctx, path, info.Size())
 			if err != nil {
 				return err
 			}
@@ -132,45 +131,65 @@ func manifestDigest(manifest SnapshotManifest) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *Service) storeBlob(path string) (string, error) {
-	file, err := os.Open(path)
+func (s *Service) storeBlob(ctx context.Context, path string, expectedSize int64) (string, error) {
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	relative, err := filepath.Rel(s.root, path)
+	if err != nil {
+		return "", err
+	}
+	file, err := root.Open(relative)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-	digest := hex.EncodeToString(hash.Sum(nil))
-	blob := filepath.Join(s.stateDir, "blobs", digest[:2], digest)
-	if _, err := os.Stat(blob); err == nil {
-		return digest, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(blob), 0o700); err != nil {
-		return "", err
-	}
-	if _, err := os.OpenFile(blob, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err != nil {
-		if os.IsExist(err) {
-			return digest, nil
-		}
-		return "", err
-	}
-	file.Seek(0, io.SeekStart)
-	destination, err := os.OpenFile(blob, os.O_WRONLY|os.O_TRUNC, 0o600)
+	info, err := file.Stat()
 	if err != nil {
 		return "", err
 	}
-	_, copyErr := io.Copy(destination, file)
-	syncErr := destination.Sync()
-	closeErr := destination.Close()
-	if copyErr != nil {
-		return "", copyErr
+	if !info.Mode().IsRegular() {
+		return "", newError("workspace.snapshot.create", CodeNotRegularFile, relative, "not a regular file")
 	}
-	if syncErr != nil {
-		return "", syncErr
+	directory := filepath.Join(s.stateDir, "blobs")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", err
 	}
-	return digest, closeErr
+	destination, err := os.CreateTemp(directory, ".blob-*")
+	if err != nil {
+		return "", err
+	}
+	defer destination.Close()
+	defer os.Remove(destination.Name())
+	hash := sha256.New()
+	size, err := io.Copy(io.MultiWriter(destination, hash), io.LimitReader(file, s.maxSnapshotFileBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if size > s.maxSnapshotFileBytes {
+		return "", newError("workspace.snapshot.create", CodeTooLarge, relative, "snapshot file budget exceeded")
+	}
+	if size != expectedSize {
+		return "", newError("workspace.snapshot.create", CodeConflict, relative, "file changed while snapshotting")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := destination.Sync(); err != nil {
+		return "", err
+	}
+	if err := destination.Close(); err != nil {
+		return "", err
+	}
+	digest := hex.EncodeToString(hash.Sum(nil))
+	blob := filepath.Join(directory, digest[:2], digest)
+	if err := os.MkdirAll(filepath.Dir(blob), 0o700); err != nil {
+		return "", err
+	}
+	// Publish only complete blobs. Hash and stored bytes come from one read.
+	return digest, os.Rename(destination.Name(), blob)
 }
 
 func (s *Service) writeManifest(manifest SnapshotManifest) error {
@@ -184,7 +203,7 @@ func (s *Service) writeManifest(manifest SnapshotManifest) error {
 }
 
 func (s *Service) Snapshot(id string) (SnapshotManifest, error) {
-	if id == "" || strings.ContainsAny(id, "/\\\x00") {
+	if _, err := uuid.Parse(id); err != nil {
 		return SnapshotManifest{}, newError("workspace.snapshot.load", CodeInvalidArgument, id, "invalid snapshot ID")
 	}
 	data, err := os.ReadFile(filepath.Join(s.stateDir, "snapshots", id, "manifest.json"))
@@ -195,8 +214,11 @@ func (s *Service) Snapshot(id string) (SnapshotManifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return SnapshotManifest{}, err
 	}
-	if manifest.Workspace != s.root || manifest.Digest != manifestDigest(manifest) {
+	if manifest.ID != id || manifest.SchemaVersion != 1 || manifest.Workspace != s.root || manifest.Digest != manifestDigest(manifest) {
 		return SnapshotManifest{}, newError("workspace.snapshot.load", CodeConflict, id, "snapshot manifest is invalid or belongs to another workspace")
+	}
+	if err := s.validateManifest(manifest); err != nil {
+		return SnapshotManifest{}, err
 	}
 	return manifest, nil
 }
@@ -245,6 +267,9 @@ func (s *Service) RestoreSnapshot(ctx context.Context, id string, options Restor
 	if err := s.checkRestoreConflicts(manifest, options); err != nil {
 		return SnapshotManifest{}, err
 	}
+	if err := s.verifySnapshotBlobs(ctx, manifest); err != nil {
+		return SnapshotManifest{}, err
+	}
 	compensation, err := s.createSnapshotLocked(ctx)
 	if err != nil {
 		return SnapshotManifest{}, err
@@ -255,128 +280,6 @@ func (s *Service) RestoreSnapshot(ctx context.Context, id string, options Restor
 	return compensation, nil
 }
 
-func (s *Service) checkRestoreConflicts(manifest SnapshotManifest, options RestoreOptions) error {
-	if options.AllowChanges {
-		return nil
-	}
-	current, err := s.currentRevisionMap()
-	if err != nil {
-		return err
-	}
-	desired := make(map[string]SnapshotFile, len(manifest.Files))
-	for _, item := range manifest.Files {
-		desired[item.Path] = item
-	}
-	for path, item := range desired {
-		if current[path] != item.SHA256 && options.ExpectedRevisions[path] != current[path] {
-			return newError("workspace.snapshot.restore", CodeConflict, path, "file changed after snapshot; explicit allow_changes is required")
-		}
-	}
-	for path := range current {
-		if _, ok := desired[path]; !ok && options.ExpectedRevisions[path] != current[path] {
-			return newError("workspace.snapshot.restore", CodeConflict, path, "new file would be removed; explicit allow_changes is required")
-		}
-	}
-	return nil
-}
-
-func (s *Service) currentRevisionMap() (map[string]string, error) {
-	result := make(map[string]string)
-	err := filepath.WalkDir(s.root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		relative, _ := filepath.Rel(s.root, path)
-		relative = filepath.ToSlash(relative)
-		if relative == "." {
-			return nil
-		}
-		if isGitMetadata(relative) || s.isStatePath(relative) || s.ignore.Match(relative, entry.IsDir()) {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if entry.Type().IsRegular() {
-			hash := sha256.New()
-			file, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			_, copyErr := io.Copy(hash, file)
-			file.Close()
-			if copyErr != nil {
-				return copyErr
-			}
-			result[relative] = hex.EncodeToString(hash.Sum(nil))
-		}
-		return nil
-	})
-	return result, err
-}
-
 func (s *Service) createSnapshotLocked(ctx context.Context) (SnapshotManifest, error) {
 	return s.createSnapshot(ctx)
-}
-
-func (s *Service) applySnapshot(ctx context.Context, manifest SnapshotManifest) error {
-	desired := make(map[string]bool, len(manifest.Files))
-	for _, item := range manifest.Files {
-		desired[item.Path] = true
-	}
-	if err := filepath.WalkDir(s.root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		relative, _ := filepath.Rel(s.root, path)
-		relative = filepath.ToSlash(relative)
-		if relative == "." {
-			return nil
-		}
-		if isGitMetadata(relative) || s.isStatePath(relative) {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !desired[relative] && !entry.IsDir() {
-			return os.Remove(path)
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	for _, item := range manifest.Files {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		path := filepath.Join(s.root, filepath.FromSlash(item.Path))
-		switch item.Type {
-		case EntryDirectory:
-			if err := os.MkdirAll(path, modeFromUnix(item.Mode)); err != nil {
-				return err
-			}
-		case EntryFile:
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return err
-			}
-			blob := filepath.Join(s.stateDir, "blobs", item.SHA256[:2], item.SHA256)
-			data, err := os.ReadFile(blob)
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(path, data, modeFromUnix(item.Mode)); err != nil {
-				return err
-			}
-		case EntrySymlink:
-			_ = os.Remove(path)
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return err
-			}
-			if err := os.Symlink(item.LinkTarget, path); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }

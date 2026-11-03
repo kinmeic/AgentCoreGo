@@ -63,6 +63,8 @@ nodes:
 
 每次运行先保存 definition digest。节点记录 inputHash、attempt、状态和结果；恢复时复用匹配哈希的完成节点，失败/丢失节点按策略重试。并发、节点数、Agent 调用数和总时长都有硬限制。
 
+`max_nodes` 同时限制 fan-out 后的任务总数；Agent 调用预算在 resume 时累计。`retry` 表示首次尝试之后最多重试的次数。工具节点保留 `args`，其中的字符串也支持 `{{item}}` 和 `{{nodes.<id>.result}}`；fan-out 的聚合结果按 item 下标以换行连接，单项可用 `{{nodes.<id>[0].result}}` 引用。
+
 ```bash
 ./agent-core workflows validate --file workflow.yaml
 ./agent-core workflows list

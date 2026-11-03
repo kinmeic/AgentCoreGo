@@ -1,9 +1,11 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 )
 
 // WriteOptions requires the current revision when replacing an existing file.
@@ -15,6 +17,12 @@ type WriteOptions struct {
 // WriteFile atomically replaces a UTF-8 file after optimistic revision validation.
 func (s *Service) WriteFile(ctx context.Context, requestedPath string, content []byte, options WriteOptions) (FilePage, error) {
 	const op = "workspace.write"
+	if err := contextErr(op, ctx); err != nil {
+		return FilePage{}, err
+	}
+	if !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
+		return FilePage{}, newError(op, CodeBinaryFile, requestedPath, "content is not UTF-8 text")
+	}
 	if options.CreateSnapshot {
 		if _, err := s.CreateSnapshot(ctx); err != nil {
 			return FilePage{}, err
@@ -77,6 +85,9 @@ func (s *Service) WriteFile(ctx context.Context, requestedPath string, content [
 		return FilePage{}, err
 	}
 	if err := temp.Close(); err != nil {
+		return FilePage{}, err
+	}
+	if err := contextErr(op, ctx); err != nil {
 		return FilePage{}, err
 	}
 	if err := os.Rename(tempPath, resolved); err != nil {

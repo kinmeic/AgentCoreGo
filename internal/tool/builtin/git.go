@@ -45,8 +45,8 @@ func (t *GitTool) Execute(ctx context.Context, args map[string]any) (string, err
 	if runtime.GOOS == "windows" {
 		nullDevice = "NUL"
 	}
-	commandArgs := []string{"-c", "safe.directory=" + workDir, "-c", "core.hooksPath=" + nullDevice,
-		"-c", "core.fsmonitor=false", "-c", "diff.external="}
+	commandArgs := []string{"--no-pager", "-c", "safe.directory=" + workDir, "-c", "core.hooksPath=" + nullDevice,
+		"-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "log.showSignature=false"}
 	switch operation {
 	case "status":
 		commandArgs = append(commandArgs, "status", "--short", "--branch")
@@ -110,6 +110,8 @@ func (b *boundedOutput) Write(data []byte) (int, error) {
 			b.value.Write(data[:remaining])
 			b.truncated = true
 		}
+	} else if len(data) > 0 {
+		b.truncated = true
 	}
 	return len(data), nil
 }

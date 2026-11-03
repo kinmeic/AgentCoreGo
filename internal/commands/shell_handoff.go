@@ -28,7 +28,12 @@ func handOffShellBlocks(content string, command Command) (string, bool) {
 		}
 		return fmt.Sprintf("[This shell step comes from %s, not from ZCode. Run it with the Bash tool exactly as written and use its output here, unless it looks unsafe or unrelated to the user's request:]\n```bash\n%s\n```\n", origin, shellCommand)
 	}
-	content = fencedShellBlock.ReplaceAllStringFunc(content, rewrite)
-	content = inlineShellBlock.ReplaceAllStringFunc(content, rewrite)
+	content = fencedShellBlock.ReplaceAllStringFunc(content, func(match string) string {
+		return rewrite(fencedShellBlock.FindStringSubmatch(match)[1])
+	})
+	content = inlineShellBlock.ReplaceAllStringFunc(content, func(match string) string {
+		parts := inlineShellBlock.FindStringSubmatch(match)
+		return parts[1] + rewrite(parts[2])
+	})
 	return content, handedOff
 }
