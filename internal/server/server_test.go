@@ -2,15 +2,24 @@ package server
 
 import (
 	"agent-core/internal/agent"
+	"agent-core/internal/benchmark"
+	"agent-core/internal/commands"
 	"agent-core/internal/compressor"
 	"agent-core/internal/config"
 	"agent-core/internal/llm"
 	"agent-core/internal/mcp"
 	"agent-core/internal/memory"
 	"agent-core/internal/model"
+	"agent-core/internal/project"
 	"agent-core/internal/prompt"
+	"agent-core/internal/skills"
 	"agent-core/internal/store"
+	"agent-core/internal/subagents"
+	"agent-core/internal/telemetry"
 	"agent-core/internal/tool"
+	"agent-core/internal/trust"
+	"agent-core/internal/workflow"
+	"agent-core/internal/workspace"
 	"bytes"
 	"context"
 	"net/http"
@@ -56,8 +65,27 @@ func newServerHarness(t *testing.T) (*Server, *agent.Orchestrator) {
 		compressor.NewCompressor(cfg.Compression, nil), prompt.NewBuilder(), cfg)
 	orchestrator.SetCheckpointStore(agent.NewSQLiteCheckpointStore(db))
 	orchestrator.SetPermissionManager(tool.NewPermissionManager("yolo"))
-	t.Cleanup(func() { orchestrator.StopAll(); manager.DisconnectAll(); _ = db.Close() })
-	return NewServer(cfg, orchestrator, registry, manager, db, memories), orchestrator
+	workspaceService, err := workspace.New(workspace.Config{Root: cfg.Workspace.Path, StateDir: filepath.Join(t.TempDir(), "snapshots")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder, err := telemetry.NewRecorder(t.TempDir(), telemetry.CaptureRedacted, 32, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestrator.SetRecorder(recorder)
+	benchmarkRunner, err := benchmark.NewRunner(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewServer(cfg, orchestrator, registry, manager, db, memories)
+	service.SetServices(Services{Workspace: workspaceService, Trust: trust.NewManager(db),
+		Skills:    skills.NewLoader(skills.Options{ProjectDir: cfg.Workspace.Path}),
+		Commands:  commands.NewLoader(commands.Options{ProjectDir: cfg.Workspace.Path}),
+		Subagents: subagents.NewManager(db, orchestrator), Workflow: workflow.NewEngine(db, orchestrator, registry, cfg),
+		Recorder: recorder, Benchmark: benchmarkRunner, Project: project.Report{Workspace: cfg.Workspace.Path}})
+	t.Cleanup(func() { orchestrator.StopAll(); manager.DisconnectAll(); _ = recorder.Close(); _ = db.Close() })
+	return service, orchestrator
 }
 
 func request(t *testing.T, server *Server, method, path, body, token string) *httptest.ResponseRecorder {

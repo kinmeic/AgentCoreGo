@@ -97,6 +97,19 @@ func (f *FailoverClient) CompleteStream(ctx context.Context, messages []model.Me
 	return nil, fmt.Errorf("all %d providers failed", len(f.providers))
 }
 
+// WithModelOptions applies a run-scoped override to every compatible provider.
+func (f *FailoverClient) WithModelOptions(model, effort string) Provider {
+	providers := make([]Provider, len(f.providers))
+	for i, provider := range f.providers {
+		if configurable, ok := provider.(interface{ WithModelOptions(string, string) Provider }); ok {
+			providers[i] = configurable.WithModelOptions(model, effort)
+		} else {
+			providers[i] = provider
+		}
+	}
+	return NewFailoverClient(providers)
+}
+
 // Name returns the active provider's name with failover indicator.
 func (f *FailoverClient) Name() string {
 	idx := int(f.current.Load())

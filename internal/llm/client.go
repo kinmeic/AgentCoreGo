@@ -3,6 +3,7 @@ package llm
 import (
 	"agent-core/internal/config"
 	"agent-core/internal/model"
+	"agent-core/internal/telemetry"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -18,7 +19,11 @@ import (
 type Client struct {
 	cfg        config.LLMConfig
 	httpClient *http.Client
+	recorder   *telemetry.Recorder
 }
+
+// SetRecorder enables provider-boundary model-io capture.
+func (c *Client) SetRecorder(recorder *telemetry.Recorder) { c.recorder = recorder }
 
 // Verify Client implements Provider at compile time.
 var _ Provider = (*Client)(nil)
@@ -35,6 +40,19 @@ func (c *Client) Name() string { return "openai" }
 
 // ModelName returns the model being used.
 func (c *Client) ModelName() string { return c.cfg.Model }
+
+// WithModelOptions creates a shallow client copy for a run-scoped model/effort override.
+func (c *Client) WithModelOptions(model, effort string) Provider {
+	clone := *c
+	if model != "" {
+		clone.cfg.Model = model
+	}
+	if effort != "" {
+		clone.cfg.ReasoningEffort = effort
+	}
+	clone.httpClient = c.httpClient
+	return &clone
+}
 
 // MaxContextWindow returns the maximum context window in tokens.
 func (c *Client) MaxContextWindow() int { return c.cfg.ContextWindow }
@@ -221,13 +239,12 @@ func (c *Client) CompleteStream(ctx context.Context, messages []model.Message, t
 	return ch, nil
 }
 
-// doRequest performs the HTTP request with retry logic.
+// doRequest performs the HTTP request with retry logic and per-attempt capture.
 func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*http.Response, error) {
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
-
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -241,7 +258,6 @@ func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*htt
 			case <-time.After(backoff):
 			}
 		}
-
 		url := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonData))
 		if err != nil {
@@ -249,14 +265,15 @@ func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*htt
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-
+		startedAt := time.Now()
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("http request: %w", err)
+			if captureErr := c.capture(ctx, attempt+1, startedAt, jsonData, nil, nil, false, lastErr); captureErr != nil {
+				return nil, captureErr
+			}
 			continue
 		}
-
-		// Retry on rate limit or server errors
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 			resp.Body.Close()
@@ -265,11 +282,38 @@ func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*htt
 			} else {
 				lastErr = classifyError(resp.StatusCode, body)
 			}
+			if captureErr := c.capture(ctx, attempt+1, startedAt, jsonData, resp, body, false, lastErr); captureErr != nil {
+				return nil, captureErr
+			}
 			continue
 		}
-
+		if resp.StatusCode != http.StatusOK {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+			resp.Body.Close()
+			if readErr != nil {
+				return nil, readErr
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			lastErr = classifyError(resp.StatusCode, body)
+			if captureErr := c.capture(ctx, attempt+1, startedAt, jsonData, resp, body, false, lastErr); captureErr != nil {
+				return nil, captureErr
+			}
+			return resp, nil
+		}
+		if reqBody.Stream {
+			resp.Body = &recordingBody{reader: resp.Body, client: c, ctx: ctx, attempt: attempt + 1, startedAt: startedAt, request: jsonData, response: resp}
+			return resp, nil
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		if captureErr := c.capture(ctx, attempt+1, startedAt, jsonData, resp, body, false, nil); captureErr != nil {
+			return nil, captureErr
+		}
 		return resp, nil
 	}
-
 	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
 }

@@ -142,10 +142,39 @@ const (
 	RunStatusCancelled       RunStatus = "cancelled"
 )
 
+// RunKind identifies the execution role within a task tree.
+type RunKind string
+
+const (
+	RunKindRoot         RunKind = "root"
+	RunKindSubagent     RunKind = "subagent"
+	RunKindWorkflowNode RunKind = "workflow_node"
+)
+
+// RunSpec is the immutable execution manifest used by replay and resume.
+type RunSpec struct {
+	Workspace      string  `json:"workspace"`
+	ConfigDigest   string  `json:"config_digest,omitempty"`
+	TrustDigest    string  `json:"trust_digest,omitempty"`
+	ToolsDigest    string  `json:"tools_digest,omitempty"`
+	SkillsDigest   string  `json:"skills_digest,omitempty"`
+	CommandsDigest string  `json:"commands_digest,omitempty"`
+	WorkflowDigest string  `json:"workflow_digest,omitempty"`
+	Model          string  `json:"model,omitempty"`
+	Effort         string  `json:"effort,omitempty"`
+	Mode           string  `json:"mode,omitempty"`
+	TraceID        string  `json:"trace_id"`
+	RootRunID      string  `json:"root_run_id"`
+	ParentRunID    string  `json:"parent_run_id,omitempty"`
+	Depth          int     `json:"depth"`
+	Kind           RunKind `json:"kind"`
+}
+
 // Run is the durable execution record used by stop, resume and diagnostics APIs.
 type Run struct {
 	ID             string            `json:"id"`
 	ConversationID string            `json:"conversation_id"`
+	Spec           RunSpec           `json:"spec"`
 	Status         RunStatus         `json:"status"`
 	Input          string            `json:"input"`
 	Source         string            `json:"source,omitempty"`
@@ -163,6 +192,9 @@ type Run struct {
 type RunEvent struct {
 	EventID        string          `json:"event_id"`
 	RunID          string          `json:"run_id"`
+	RootRunID      string          `json:"root_run_id,omitempty"`
+	ParentRunID    string          `json:"parent_run_id,omitempty"`
+	TraceID        string          `json:"trace_id,omitempty"`
 	ConversationID string          `json:"conversation_id"`
 	Sequence       uint64          `json:"sequence"`
 	Type           string          `json:"type"`

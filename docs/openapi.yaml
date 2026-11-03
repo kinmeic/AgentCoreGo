@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: AgentCore API
-  version: 0.2.0
+  version: 0.3.0
   description: Single-tenant AgentCore HTTP and SSE API. All endpoints except /health require bearer auth when configured.
 servers:
   - url: http://127.0.0.1:8900
@@ -288,6 +288,261 @@ paths:
         - {name: name, in: path, required: true, schema: {type: string}}
       responses:
         '200': {description: Disconnected and configuration removed}
+  /v1/workspace:
+    get:
+      tags: [workspace]
+      responses:
+        '200': {description: Workspace identity and project declarations}
+  /v1/workspace/entries:
+    get:
+      tags: [workspace]
+      parameters:
+        - {name: path, in: query, schema: {type: string}}
+        - {name: offset, in: query, schema: {type: integer, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, default: 200, maximum: 1000}}
+      responses:
+        '200': {description: Deterministic directory page}
+  /v1/workspace/files/content:
+    get:
+      tags: [workspace]
+      parameters:
+        - {name: path, in: query, required: true, schema: {type: string}}
+        - {name: offset, in: query, schema: {type: integer, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, default: 500, maximum: 2000}}
+      responses:
+        '200': {description: UTF-8 content and whole-file revision}
+        '404': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [workspace]
+      parameters:
+        - {name: If-Match, in: header, schema: {type: string}, description: Current file SHA-256 revision}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, content]
+              properties:
+                path: {type: string}
+                content: {type: string}
+                expected_revision: {type: string}
+                create_snapshot: {type: boolean}
+      responses:
+        '200': {description: Atomic write completed}
+        '409': {description: Missing or stale revision}
+  /v1/workspace/files/diff:
+    get:
+      tags: [workspace]
+      parameters:
+        - {name: path, in: query, required: true, schema: {type: string}}
+      responses:
+        '200': {description: File diff relative to HEAD}
+  /v1/workspace/git/status:
+    get:
+      tags: [workspace]
+      responses:
+        '200': {description: Structured staged, unstaged, untracked and conflict status}
+  /v1/workspace/git/diff:
+    get:
+      tags: [workspace]
+      parameters:
+        - {name: mode, in: query, schema: {type: string, enum: [worktree, staged, head, base]}}
+        - {name: base, in: query, schema: {type: string}}
+        - {name: path, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Bounded read-only Git diff}
+  /v1/workspace/git/log:
+    get:
+      tags: [workspace]
+      parameters:
+        - {name: before, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 20, maximum: 100}}
+        - {name: path, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Bounded commit history}
+  /v1/snapshots:
+    post:
+      tags: [snapshots]
+      responses:
+        '201': {description: Complete content-addressed workspace snapshot}
+    get:
+      tags: [snapshots]
+      responses:
+        '200': {description: Snapshot summaries}
+  /v1/snapshots/{id}:
+    get:
+      tags: [snapshots]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Snapshot manifest}
+  /v1/snapshots/{id}/restore:
+    post:
+      tags: [snapshots]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                allow_changes: {type: boolean, default: false}
+                expected_revisions: {type: object, additionalProperties: {type: string}}
+      responses:
+        '200': {description: Compensation snapshot created before restore}
+        '409': {description: Unapproved changes would be overwritten}
+  /v1/skills:
+    get:
+      tags: [extensions]
+      responses:
+        '200': {description: Skill metadata and diagnostics}
+  /v1/skills/load:
+    post:
+      tags: [extensions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [name], properties: {name: {type: string}}}
+      responses:
+        '200': {description: Skill body and base directory}
+        '404': {description: Skill not found}
+  /v1/commands:
+    get:
+      tags: [extensions]
+      responses:
+        '200': {description: Custom command catalog and diagnostics}
+  /v1/trust/{action}:
+    post:
+      tags: [extensions]
+      parameters:
+        - {name: action, in: path, required: true, schema: {type: string, enum: [review, grant, revoke]}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {bundle_digest: {type: string}}
+      responses:
+        '200': {description: Trust status for the exact declaration bundle}
+        '409': {description: Digest mismatch}
+  /v1/agents:
+    get:
+      tags: [agents]
+      parameters:
+        - {name: parent, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 100}}
+      responses:
+        '200': {description: Child runs and background agents}
+  /v1/agents/{id}/stop:
+    post:
+      tags: [agents]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Cancellation requested}
+  /v1/workflows/validate:
+    post:
+      tags: [workflow]
+      responses:
+        '200': {description: Definition valid and digest returned}
+        '400': {description: Invalid DAG}
+  /v1/workflows:
+    post:
+      tags: [workflow]
+      responses:
+        '201': {description: Workflow started}
+    get:
+      tags: [workflow]
+      responses:
+        '200': {description: Workflow runs}
+  /v1/workflows/{id}:
+    get:
+      tags: [workflow]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Definition, scheduler state and node attempts}
+  /v1/workflows/{id}/resume:
+    post:
+      tags: [workflow]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Resume from cached nodes}
+  /v1/workflows/{id}/cancel:
+    post:
+      tags: [workflow]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Workflow cancelled}
+  /v1/runs/{id}/model-calls:
+    get:
+      tags: [telemetry]
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      responses:
+        '200': {description: Provider-boundary model calls and artifact references}
+  /v1/runs/{id}/tool-calls:
+    get:
+      tags: [telemetry]
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      responses:
+        '200': {description: Structured tool invocations}
+  /v1/runs/{id}/changes:
+    get:
+      tags: [telemetry]
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      responses:
+        '200': {description: Structured file changes and diff artifacts}
+  /v1/runs/{id}/trace/export:
+    post:
+      tags: [telemetry]
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      responses:
+        '200': {description: NDJSON trace and fidelity manifest exported}
+        '409': {description: Capture is incomplete}
+  /v1/runs/{id}/events/stream:
+    get:
+      tags: [runs]
+      parameters:
+        - {$ref: '#/components/parameters/RunID'}
+        - {name: after, in: query, schema: {type: integer, format: uint64}}
+        - {name: Last-Event-ID, in: header, schema: {type: string}}
+      responses:
+        '200': {description: Replay followed by live events, with resync_required on overflow or invalid cursor}
+  /v1/conversations/{id}/runs:
+    get:
+      tags: [conversations]
+      parameters: [{$ref: '#/components/parameters/ConversationID'}]
+      responses:
+        '200': {description: Runs in one conversation}
+  /v1/benchmarks:
+    post:
+      tags: [benchmark]
+      responses:
+        '201': {description: Benchmark plan persisted and started}
+  /v1/benchmarks/{id}:
+    get:
+      tags: [benchmark]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Plan, manifest and case evidence}
+  /v1/benchmarks/{id}/cancel:
+    post:
+      tags: [benchmark]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Benchmark cancellation requested}
+  /v1/config/effective:
+    get:
+      tags: [diagnostics]
+      responses:
+        '200': {description: Redacted effective config and project provenance}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}

@@ -19,30 +19,37 @@ func (s *SQLite) SaveRun(run *model.Run) error {
 	if err != nil {
 		return err
 	}
+	spec, err := json.Marshal(run.Spec)
+	if err != nil {
+		return err
+	}
 	run.UpdatedAt = time.Now()
 	_, err = s.db.Exec(`INSERT INTO runs (
 		id, conversation_id, status, input, source, metadata, iteration, reply, error, usage,
-		created_at, updated_at, finished_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		created_at, updated_at, finished_at, parent_run_id, root_run_id, depth, kind, spec
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET status=excluded.status, iteration=excluded.iteration,
 		reply=excluded.reply, error=excluded.error, usage=excluded.usage,
 		updated_at=excluded.updated_at, finished_at=excluded.finished_at`,
 		run.ID, run.ConversationID, run.Status, run.Input, run.Source, string(metadata),
-		run.Iteration, run.Reply, run.Error, string(usage), run.CreatedAt, run.UpdatedAt, run.FinishedAt)
+		run.Iteration, run.Reply, run.Error, string(usage), run.CreatedAt, run.UpdatedAt, run.FinishedAt,
+		run.Spec.ParentRunID, run.Spec.RootRunID, run.Spec.Depth, run.Spec.Kind, string(spec))
 	return err
 }
 
 // GetRun returns a run by ID, or nil when it does not exist.
 func (s *SQLite) GetRun(id string) (*model.Run, error) {
 	row := s.db.QueryRow(`SELECT id, conversation_id, status, input, source, metadata,
-		iteration, reply, error, usage, created_at, updated_at, finished_at FROM runs WHERE id = ?`, id)
+		iteration, reply, error, usage, created_at, updated_at, finished_at,
+		parent_run_id, root_run_id, depth, kind, spec FROM runs WHERE id = ?`, id)
 	return scanRun(row)
 }
 
 // LatestRun returns the newest run for a conversation.
 func (s *SQLite) LatestRun(conversationID string) (*model.Run, error) {
 	row := s.db.QueryRow(`SELECT id, conversation_id, status, input, source, metadata,
-		iteration, reply, error, usage, created_at, updated_at, finished_at
+		iteration, reply, error, usage, created_at, updated_at, finished_at,
+		parent_run_id, root_run_id, depth, kind, spec
 		FROM runs WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1`, conversationID)
 	return scanRun(row)
 }
@@ -51,14 +58,26 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanRun(row rowScanner) (*model.Run, error) {
 	var run model.Run
-	var metadata, usage sql.NullString
+	var metadata, usage, spec sql.NullString
+	var parentRunID, rootRunID, kind sql.NullString
 	var finishedAt sql.NullTime
 	if err := row.Scan(&run.ID, &run.ConversationID, &run.Status, &run.Input, &run.Source,
 		&metadata, &run.Iteration, &run.Reply, &run.Error, &usage, &run.CreatedAt,
-		&run.UpdatedAt, &finishedAt); err == sql.ErrNoRows {
+		&run.UpdatedAt, &finishedAt, &parentRunID, &rootRunID, &run.Spec.Depth, &kind, &spec); err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
+	}
+	run.Spec.ParentRunID = parentRunID.String
+	run.Spec.RootRunID = rootRunID.String
+	run.Spec.Kind = model.RunKind(kind.String)
+	if run.Spec.Kind == "" {
+		run.Spec.Kind = model.RunKindRoot
+	}
+	if spec.Valid && spec.String != "" && spec.String != "null" {
+		if err := json.Unmarshal([]byte(spec.String), &run.Spec); err != nil {
+			return nil, err
+		}
 	}
 	if metadata.Valid && metadata.String != "" {
 		if err := json.Unmarshal([]byte(metadata.String), &run.Metadata); err != nil {
@@ -79,9 +98,11 @@ func scanRun(row rowScanner) (*model.Run, error) {
 // AppendRunEvent persists an event in sequence order for replay and diagnostics.
 func (s *SQLite) AppendRunEvent(event *model.RunEvent) error {
 	_, err := s.db.Exec(`INSERT INTO run_events(
-		event_id, run_id, conversation_id, sequence, type, payload, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?)`, event.EventID, event.RunID, event.ConversationID,
-		event.Sequence, event.Type, string(event.Payload), event.CreatedAt)
+		event_id, run_id, conversation_id, sequence, type, payload, created_at,
+		root_run_id, parent_run_id, trace_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.EventID, event.RunID, event.ConversationID,
+		event.Sequence, event.Type, string(event.Payload), event.CreatedAt,
+		event.RootRunID, event.ParentRunID, event.TraceID)
 	return err
 }
 
@@ -90,7 +111,8 @@ func (s *SQLite) RunEvents(runID string, after uint64, limit int) ([]*model.RunE
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
 	}
-	rows, err := s.db.Query(`SELECT event_id, run_id, conversation_id, sequence, type, payload, created_at
+	rows, err := s.db.Query(`SELECT event_id, run_id, conversation_id, sequence, type, payload, created_at,
+		root_run_id, parent_run_id, trace_id
 		FROM run_events WHERE run_id = ? AND sequence > ? ORDER BY sequence ASC LIMIT ?`, runID, after, limit)
 	if err != nil {
 		return nil, err
@@ -100,10 +122,14 @@ func (s *SQLite) RunEvents(runID string, after uint64, limit int) ([]*model.RunE
 	for rows.Next() {
 		var event model.RunEvent
 		var payload string
+		var rootRunID, parentRunID, traceID sql.NullString
 		if err := rows.Scan(&event.EventID, &event.RunID, &event.ConversationID, &event.Sequence,
-			&event.Type, &payload, &event.CreatedAt); err != nil {
+			&event.Type, &payload, &event.CreatedAt, &rootRunID, &parentRunID, &traceID); err != nil {
 			return nil, err
 		}
+		event.RootRunID = rootRunID.String
+		event.ParentRunID = parentRunID.String
+		event.TraceID = traceID.String
 		event.Payload = json.RawMessage(payload)
 		events = append(events, &event)
 	}

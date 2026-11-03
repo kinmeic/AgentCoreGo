@@ -37,6 +37,19 @@ go build -trimpath ./cmd/agent-core
 - **HTTP/CLI**：鉴权、严格 JSON、CORS、readiness、SSE frame、限流、审批端到端。
 - **MCP/Callback**：三传输、HMAC、响应大小、私网策略和会话生命周期。
 
+## 0.3.0 扩展能力验收（2026-11-03）
+
+在原有验收基础上，本轮再次实际通过：
+
+- 全部包的标准测试、race detector 和 `go vet`。
+- run 级 checkpoint、RunSpec、项目配置/Trust、Skills、Commands、完整文件树快照、Subagents、声明式 Workflow、model-io、benchmark 和 Web IDE 相关测试。
+- 真实临时 Git 仓库、快照冲突/补偿恢复、Workflow 节点缓存恢复、SQLite 旧库迁移备份。
+- 真实 HTTP 的 `/help`、Workspace 写入与恢复、Workflow 完成状态，以及同步/流式 provider wire 记录。
+- 真实 0.3.0 二进制 + 本地 mock OpenAI 的端到端：Skills discovery、`/help`、Workspace 快照恢复、Workflow、trace export、benchmark 和 CLI，全部通过。
+- `agent-core.yaml`、`deploy/container.yaml`、OpenAPI、Compose、CI YAML 再次解析通过；Windows/Linux 交叉编译通过。
+
+端到端输出包含 `BINARY_E2E_0_3_PASS` 和 `status=completed`。与真实模型效果、Docker 镜像运行和多租户隔离相关的限制仍适用，未因新增功能而消除。
+
 ## 未在本次环境验收
 
 - Windows 和 Linux 的实际运行、路径与进程树行为；Windows `taskkill /T` 仅实现并参与源码编译路径，未在 Windows 执行。

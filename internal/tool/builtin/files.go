@@ -3,6 +3,7 @@ package builtin
 import (
 	"agent-core/internal/model"
 	"agent-core/internal/sandbox"
+	"agent-core/internal/telemetry"
 	"agent-core/internal/tool"
 	"bytes"
 	"context"
@@ -106,7 +107,7 @@ func (t *FileWriteTool) Execute(ctx context.Context, args map[string]any) (strin
 	if err != nil {
 		return "", err
 	}
-	if err := emitFileChange(ctx, path, "write"); err != nil {
+	if err := emitFileChange(ctx, path, "write", result); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -199,7 +200,7 @@ func atomicWriteManagedFile(path string, content []byte, expectedRevision string
 		_ = directory.Close()
 	}
 	result := map[string]any{"path": path, "status": map[bool]string{true: "updated", false: "created"}[exists],
-		"bytes": len(content), "revision": revisionFor(content), "diff": makeFileDiff(old, content)}
+		"bytes": len(content), "revision": revisionFor(content), "before_revision": expectedRevision, "diff": makeFileDiff(old, content)}
 	encoded, _ := json.Marshal(result)
 	return string(encoded), nil
 }
@@ -252,11 +253,45 @@ func makeFileDiff(old, new []byte) map[string]any {
 	for _, line := range added {
 		patch.WriteString("+" + line + "\n")
 	}
-	return map[string]any{"before_lines": len(oldLines), "after_lines": len(newLines), "patch": patch.String()}
+	return map[string]any{"before_lines": len(oldLines), "after_lines": len(newLines),
+		"additions": len(added), "deletions": len(removed), "patch": patch.String()}
 }
 
-func emitFileChange(ctx context.Context, path, operation string) error {
-	if info, ok := tool.ExecutionInfoFromContext(ctx); ok && info.Emit != nil {
+func emitFileChange(ctx context.Context, path, operation, resultJSON string) error {
+	info, ok := tool.ExecutionInfoFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	if info.RecordFileChange != nil {
+		var result struct {
+			Revision       string `json:"revision"`
+			BeforeRevision string `json:"before_revision"`
+			Diff           struct {
+				Patch     string `json:"patch"`
+				Additions int    `json:"additions"`
+				Deletions int    `json:"deletions"`
+			} `json:"diff"`
+		}
+		_ = json.Unmarshal([]byte(resultJSON), &result)
+		change := telemetry.FileChange{TraceID: info.TraceID, RootID: info.RootRunID, ParentID: info.ParentRunID,
+			RunID: info.RunID, ToolInvocationID: info.ToolCallID, Path: path,
+			BeforeRevision: result.BeforeRevision, AfterRevision: result.Revision,
+			AddedLines: &result.Diff.Additions, DeletedLines: &result.Diff.Deletions, ChangedAt: time.Now()}
+		switch operation {
+		case "delete":
+			change.Operation = telemetry.FileDelete
+		case "move":
+			change.Operation = telemetry.FileRename
+		case "write", "edit":
+			change.Operation = telemetry.FileUpdate
+		default:
+			change.Operation = telemetry.FileUpdate
+		}
+		if err := info.RecordFileChange(change, result.Diff.Patch); err != nil {
+			return err
+		}
+	}
+	if info.Emit != nil {
 		return info.Emit(model.StreamEvent{Type: "file.changed", Content: path, ToolName: operation})
 	}
 	return nil

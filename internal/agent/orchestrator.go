@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"agent-core/internal/commands"
 	"agent-core/internal/compressor"
 	"agent-core/internal/config"
 	"agent-core/internal/llm"
@@ -8,11 +9,15 @@ import (
 	"agent-core/internal/model"
 	"agent-core/internal/prompt"
 	"agent-core/internal/sandbox"
+	"agent-core/internal/skills"
 	"agent-core/internal/store"
 	"agent-core/internal/store/vector"
+	"agent-core/internal/telemetry"
 	"agent-core/internal/tool"
 	"agent-core/internal/tool/builtin"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +55,9 @@ type Orchestrator struct {
 	cfg             config.Config
 	checkpointStore CheckpointStore
 	permissions     *tool.PermissionManager
+	skillLoader     *skills.Loader
+	commandLoader   *commands.Loader
+	recorder        *telemetry.Recorder
 	runSlots        chan struct{}
 
 	mu         sync.RWMutex
@@ -94,6 +102,9 @@ func (o *Orchestrator) SetCheckpointStore(store CheckpointStore) { o.checkpointS
 func (o *Orchestrator) SetPermissionManager(manager *tool.PermissionManager) {
 	o.permissions = manager
 }
+func (o *Orchestrator) SetRecorder(recorder *telemetry.Recorder) { o.recorder = recorder }
+func (o *Orchestrator) SetSkillLoader(loader *skills.Loader)     { o.skillLoader = loader }
+func (o *Orchestrator) SetCommandLoader(loader *commands.Loader) { o.commandLoader = loader }
 
 // ChatSync handles a synchronous chat request. Interactive questions fail closed.
 func (o *Orchestrator) ChatSync(ctx context.Context, req model.ChatRequest) (*model.ChatResponse, error) {
@@ -114,6 +125,15 @@ func (o *Orchestrator) ChatStream(ctx context.Context, req model.ChatRequest, ev
 }
 
 func (o *Orchestrator) startNewRun(ctx context.Context, req model.ChatRequest, interactive bool, out chan<- model.StreamEvent) (*model.ChatResponse, error) {
+	return o.startRunWithSpec(ctx, req, o.newRootSpec(""), "", interactive, out)
+}
+
+// StartChildRun executes a subagent or workflow node with a caller-fixed run ID and lineage.
+func (o *Orchestrator) StartChildRun(ctx context.Context, req model.ChatRequest, spec model.RunSpec, runID string, interactive bool, out chan<- model.StreamEvent) (*model.ChatResponse, error) {
+	return o.startRunWithSpec(ctx, req, spec, runID, interactive, out)
+}
+
+func (o *Orchestrator) startRunWithSpec(ctx context.Context, req model.ChatRequest, spec model.RunSpec, requestedRunID string, interactive bool, out chan<- model.StreamEvent) (*model.ChatResponse, error) {
 	select {
 	case o.runSlots <- struct{}{}:
 		defer func() { <-o.runSlots }()
@@ -132,8 +152,26 @@ func (o *Orchestrator) startNewRun(ctx context.Context, req model.ChatRequest, i
 	if err := o.ensureConversation(convID, req.ConversationID == "", req.Source, req.Metadata); err != nil {
 		return nil, err
 	}
+	conversation, _ := o.store.GetConversation(convID)
+	applyConversationOverrides(&spec, conversation)
 	now := time.Now()
-	run := &model.Run{ID: uuid.NewString(), ConversationID: convID, Status: model.RunStatusRunning,
+	runID := requestedRunID
+	if runID == "" {
+		runID = uuid.NewString()
+	}
+	if spec.RootRunID == "" {
+		spec.RootRunID = runID
+	}
+	if spec.TraceID == "" {
+		spec.TraceID = uuid.NewString()
+	}
+	if spec.Kind == "" {
+		spec.Kind = model.RunKindRoot
+	}
+	if spec.Workspace == "" {
+		spec.Workspace = o.cfg.Workspace.Path
+	}
+	run := &model.Run{ID: runID, ConversationID: convID, Spec: spec, Status: model.RunStatusRunning,
 		Input: req.Message, Source: req.Source, Metadata: req.Metadata, CreatedAt: now, UpdatedAt: now,
 		Usage: &model.UsageInfo{}}
 	if err := o.store.SaveRun(run); err != nil {
@@ -156,7 +194,7 @@ func (o *Orchestrator) startNewRun(ctx context.Context, req model.ChatRequest, i
 		Role: model.RoleUser, Content: req.Message, Status: "completed", CreatedAt: time.Now()}); err != nil {
 		return o.failRun(run, emitter, nil, fmt.Errorf("save user message: %w", err), interactive)
 	}
-	cp := &Checkpoint{ConversationID: convID, RunID: run.ID, Messages: messages}
+	cp := &Checkpoint{ConversationID: convID, RunID: run.ID, Spec: run.Spec, Provider: o.providerForSpec(run.Spec), Messages: messages}
 	if err := o.writeCheckpoint(run, cp); err != nil {
 		return o.failRun(run, emitter, cp, err, interactive)
 	}
@@ -195,7 +233,7 @@ func (o *Orchestrator) ResumeRun(ctx context.Context, runID, strategy string, in
 	if o.checkpointStore == nil {
 		return nil, errors.New("checkpoint storage is unavailable")
 	}
-	cp, err := o.checkpointStore.LoadCheckpoint(run.ConversationID)
+	cp, err := o.checkpointStore.LoadCheckpoint(run.ID, run.ConversationID)
 	if err != nil || cp == nil {
 		if err == nil {
 			err = errors.New("checkpoint not found")
@@ -206,6 +244,12 @@ func (o *Orchestrator) ResumeRun(ctx context.Context, runID, strategy string, in
 		return nil, errors.New("checkpoint belongs to a different run")
 	}
 	cp.RunID = run.ID
+	if cp.Spec.RootRunID == "" {
+		cp.Spec = run.Spec
+	} else {
+		run.Spec = cp.Spec
+	}
+	cp.Provider = o.providerForSpec(run.Spec)
 	runCtx, err := o.registerRun(run.ID, run.ConversationID, ctx)
 	if err != nil {
 		return nil, err
@@ -263,7 +307,9 @@ func (o *Orchestrator) executeRun(ctx context.Context, run *model.Run, cp *Check
 		if err := emitter.emit(model.StreamEvent{Type: "thinking", Iteration: budget.CurrentIteration() + 1}); err != nil {
 			return err
 		}
-		response, usage, err := o.complete(ctx, cp, interactive, emitter)
+		response, usage, err := o.complete(llm.WithCallMetadata(ctx, llm.CallMetadata{RunID: run.ID,
+			RootID: run.Spec.RootRunID, ParentID: run.Spec.ParentRunID, TraceID: run.Spec.TraceID,
+			Purpose: purposeForRunKind(run.Spec.Kind)}), cp, interactive, emitter)
 		if err != nil {
 			if classifyAndLog(err) {
 				budget.RecordIteration(0)
@@ -310,15 +356,19 @@ func (o *Orchestrator) executeRun(ctx context.Context, run *model.Run, cp *Check
 }
 
 func (o *Orchestrator) complete(ctx context.Context, cp *Checkpoint, stream bool, emitter *runEmitter) (*model.Message, *model.UsageInfo, error) {
+	provider := o.llmProvider
+	if cp.Provider != nil {
+		provider = cp.Provider
+	}
 	definitions := o.toolRegistry.ToolDefinitionsForRun(cp.Discovery)
 	if !stream {
-		response, usage, err := o.llmProvider.Complete(ctx, cp.Messages, definitions)
+		response, usage, err := provider.Complete(ctx, cp.Messages, definitions)
 		if response != nil {
 			response.Content = FilterThinkTags(response.Content)
 		}
 		return response, usage, err
 	}
-	chunks, err := o.llmProvider.CompleteStream(ctx, cp.Messages, definitions)
+	chunks, err := provider.CompleteStream(ctx, cp.Messages, definitions)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -375,17 +425,20 @@ func (o *Orchestrator) executePendingTools(ctx context.Context, run *model.Run, 
 			return err
 		}
 		var result string
+		startedAt := time.Now()
 		execErr := parseErr
 		if execErr == nil {
 			var statusErr error
 			toolCtx := tool.WithExecutionInfo(ctx, tool.ExecutionInfo{
-				ConversationID: run.ConversationID, RunID: run.ID, ToolCallID: call.ID, Interactive: interactive,
-				Discovery: cp.Discovery, Emit: emitter.emit, OnStatus: func(status model.RunStatus) {
+				ConversationID: run.ConversationID, RunID: run.ID, RootRunID: run.Spec.RootRunID,
+				ParentRunID: run.Spec.ParentRunID, TraceID: run.Spec.TraceID, ToolCallID: call.ID, Interactive: interactive,
+				Discovery: cp.Discovery, Mode: run.Spec.Mode, Emit: emitter.emit, OnStatus: func(status model.RunStatus) {
 					run.Status = status
 					if err := o.store.SaveRun(run); err != nil && statusErr == nil {
 						statusErr = fmt.Errorf("persist run status: %w", err)
 					}
 				},
+				RecordFileChange: o.recordFileChange,
 			})
 			result, execErr = o.toolRegistry.Dispatch(toolCtx, call.Function.Name, args)
 			if statusErr != nil && execErr == nil {
@@ -400,6 +453,25 @@ func (o *Orchestrator) executePendingTools(ctx context.Context, run *model.Run, 
 		}
 		if execErr != nil {
 			result = "Error: " + execErr.Error()
+		}
+		if o.recorder != nil {
+			input, _ := json.Marshal(args)
+			if parseErr != nil {
+				input, _ = json.Marshal(map[string]string{"raw": call.Function.Arguments})
+			}
+			output, _ := json.Marshal(map[string]string{"result": result})
+			registered, _ := o.toolRegistry.Get(call.Function.Name)
+			capabilities := []string{}
+			if registered != nil {
+				capabilities = append(capabilities, "scope="+registered.Capabilities.SideEffectScope, "risk="+registered.Capabilities.RiskLevel)
+			}
+			invocation := telemetry.ToolInvocation{TraceID: run.Spec.TraceID, RootID: run.Spec.RootRunID,
+				ParentID: run.Spec.ParentRunID, RunID: run.ID, ToolCallID: call.ID, Name: call.Function.Name,
+				Input: input, Output: output, Status: toolStatusForError(execErr), Capabilities: capabilities,
+				Approval: telemetry.ApprovalRecord{Status: telemetry.ApprovalNotRequired}, StartedAt: startedAt, FinishedAt: time.Now()}
+			if err := o.recorder.RecordTool(ctx, invocation); err != nil && o.recorder.Policy() == telemetry.CaptureTraining {
+				return err
+			}
 		}
 		cp.Actions = append(cp.Actions, model.Action{RunID: run.ID, ToolCallID: call.ID,
 			Tool: call.Function.Name, Status: statusFromErr(execErr), Result: truncateStr(result, 500)})
@@ -498,7 +570,7 @@ func (o *Orchestrator) completeRun(run *model.Run, emitter *runEmitter, cp *Chec
 		return o.failRun(run, emitter, cp, err, interactive)
 	}
 	if o.checkpointStore != nil {
-		if err := o.checkpointStore.DeleteCheckpoint(run.ConversationID); err != nil {
+		if err := o.checkpointStore.DeleteCheckpoint(run.ID); err != nil {
 			log.Printf("[agent] completed run %s but could not delete checkpoint: %v", run.ID, err)
 		}
 	}
@@ -506,7 +578,7 @@ func (o *Orchestrator) completeRun(run *model.Run, emitter *runEmitter, cp *Chec
 		Reply: run.Reply, Usage: run.Usage}); err != nil {
 		return nil, err
 	}
-	o.autoTitle(run.ConversationID, run.Input)
+	o.autoTitle(run)
 	return &model.ChatResponse{ConversationID: run.ConversationID, RunID: run.ID,
 		Status: model.RunStatusCompleted, Reply: run.Reply, Intent: intent, Actions: cp.Actions,
 		Usage: run.Usage, CreatedAt: now}, nil
@@ -540,6 +612,7 @@ func (o *Orchestrator) writeCheckpoint(run *model.Run, cp *Checkpoint) error {
 		return nil
 	}
 	cp.ConversationID, cp.RunID, cp.SavedAt = run.ConversationID, run.ID, time.Now()
+	cp.Spec = run.Spec
 	if cp.Discovery != nil {
 		cp.Discovered = cp.Discovery.Names()
 	}
@@ -570,6 +643,29 @@ func (o *Orchestrator) commitToolBoundary(run *model.Run, cp *Checkpoint, toolLo
 	return o.store.SaveRun(run)
 }
 
+// CompactConversation writes an explicit durable summary through the latest log.
+func (o *Orchestrator) CompactConversation(ctx context.Context, convID, instructions string) (string, error) {
+	logs, err := o.store.GetLogs(convID, 200)
+	if err != nil {
+		return "", err
+	}
+	if len(logs) == 0 {
+		return "", errors.New("conversation has no messages to compact")
+	}
+	messages := make([]model.Message, 0, len(logs)+1)
+	for _, entry := range logs {
+		messages = append(messages, conversationLogMessage(entry))
+	}
+	if instructions != "" {
+		messages = append(messages, model.Message{Role: model.RoleUser, Content: "Summary instructions: " + instructions})
+	}
+	summary, _ := o.comp.Summarize(ctx, messages)
+	if summary == "" {
+		return "", errors.New("empty conversation summary")
+	}
+	return summary, o.store.SaveConversationSummary(convID, summary, logs[len(logs)-1].ID)
+}
+
 func (o *Orchestrator) buildMessages(ctx context.Context, convID string, userMsg model.Message) ([]model.Message, error) {
 	logs, err := o.store.GetLogs(convID, 200)
 	if err != nil {
@@ -594,6 +690,11 @@ func (o *Orchestrator) buildMessages(ctx context.Context, convID string, userMsg
 	}
 	soulContent, _ := sandbox.ReadSoulFile(o.cfg.Workspace.Path, o.cfg.Workspace.SoulFile)
 	systemMessage := o.promptBuilder.BuildSystemMessage(soulContent, memories, o.toolRegistry.Names())
+	if o.skillLoader != nil {
+		if metadata := o.skillLoader.Discover().RenderMetadata(); metadata != "" {
+			systemMessage.Content += "\n\n## Available Skills\n" + metadata
+		}
+	}
 	messages := []model.Message{systemMessage}
 	if summary != "" {
 		messages = append(messages, model.Message{Role: model.RoleSystem, Content: summary})
@@ -832,7 +933,8 @@ func (o *Orchestrator) PendingApprovals() []tool.ApprovalRequest {
 	return o.permissions.Pending()
 }
 
-func (o *Orchestrator) autoTitle(convID, firstMessage string) {
+func (o *Orchestrator) autoTitle(run *model.Run) {
+	convID, firstMessage := run.ConversationID, run.Input
 	conv, err := o.store.GetConversation(convID)
 	if err != nil || conv == nil || conv.Title != "" {
 		return
@@ -849,6 +951,8 @@ func (o *Orchestrator) autoTitle(convID, firstMessage string) {
 		defer func() { _ = recover() }()
 		ctx, cancel := context.WithTimeout(o.backgroundCtx, 10*time.Second)
 		defer cancel()
+		ctx = llm.WithCallMetadata(ctx, llm.CallMetadata{RunID: run.ID, RootID: run.Spec.RootRunID,
+			ParentID: run.Spec.ParentRunID, TraceID: run.Spec.TraceID, Purpose: telemetry.PurposeTitle})
 		messages := []model.Message{{Role: model.RoleUser,
 			Content: "Generate a very short title (max 8 words, no quotes) for: " + firstMessage}}
 		response, _, err := o.llmProvider.Complete(ctx, messages, nil)
@@ -869,6 +973,80 @@ func (o *Orchestrator) autoTitle(convID, firstMessage string) {
 	}()
 }
 
+func purposeForRunKind(kind model.RunKind) telemetry.Purpose {
+	switch kind {
+	case model.RunKindSubagent:
+		return telemetry.PurposeSubagent
+	case model.RunKindWorkflowNode:
+		return telemetry.PurposeWorkflow
+	default:
+		return telemetry.PurposeMain
+	}
+}
+
+func (o *Orchestrator) skillsDigest() string {
+	if o.skillLoader == nil {
+		return ""
+	}
+	catalog := o.skillLoader.Discover()
+	data, _ := json.Marshal(catalog.Skills)
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
+
+func (o *Orchestrator) commandsDigest() string {
+	if o.commandLoader == nil {
+		return ""
+	}
+	catalog := o.commandLoader.Discover()
+	data, _ := json.Marshal(catalog.Commands)
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
+
+func applyConversationOverrides(spec *model.RunSpec, conversation *model.Conversation) {
+	if conversation == nil {
+		return
+	}
+	if value := conversation.Metadata["model"]; value != "" {
+		spec.Model = value
+	}
+	if value := conversation.Metadata["effort"]; value != "" {
+		spec.Effort = value
+	}
+	if value := conversation.Metadata["mode"]; value != "" {
+		spec.Mode = value
+	}
+}
+
+func (o *Orchestrator) providerForSpec(spec model.RunSpec) llm.Provider {
+	if (spec.Model == "" || spec.Model == o.llmProvider.ModelName()) && (spec.Effort == "" || spec.Effort == o.cfg.LLM.ReasoningEffort) {
+		return o.llmProvider
+	}
+	if configurable, ok := o.llmProvider.(interface {
+		WithModelOptions(string, string) llm.Provider
+	}); ok {
+		return configurable.WithModelOptions(spec.Model, spec.Effort)
+	}
+	return o.llmProvider
+}
+
+func (o *Orchestrator) newRootSpec(runID string) model.RunSpec {
+	configData, _ := json.Marshal(o.cfg.Redacted())
+	configDigest := sha256.Sum256(configData)
+	toolData, _ := json.Marshal(o.toolRegistry.Names())
+	toolDigest := sha256.Sum256(toolData)
+	mode := o.cfg.Tools.ApprovalMode
+	if o.permissions != nil {
+		mode = o.permissions.Mode()
+	}
+	return model.RunSpec{Workspace: o.cfg.Workspace.Path,
+		ConfigDigest: hex.EncodeToString(configDigest[:]), ToolsDigest: hex.EncodeToString(toolDigest[:]),
+		SkillsDigest: o.skillsDigest(), CommandsDigest: o.commandsDigest(),
+		Model: o.llmProvider.ModelName(), Effort: o.cfg.LLM.ReasoningEffort, Mode: mode,
+		TraceID: uuid.NewString(), RootRunID: runID, Kind: model.RunKindRoot}
+}
+
 func classifyIntent(reply string) string {
 	lower := strings.ToLower(reply)
 	for _, marker := range []string{"i've", "done", "completed", "已创建", "已修改", "已完成", "已写入"} {
@@ -877,6 +1055,34 @@ func classifyIntent(reply string) string {
 		}
 	}
 	return model.IntentQuery
+}
+
+func toolStatusForError(err error) telemetry.ToolStatus {
+	if err == nil {
+		return telemetry.ToolSucceeded
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return telemetry.ToolCancelled
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "permission denied") || strings.Contains(message, "blocked by policy") {
+		return telemetry.ToolDenied
+	}
+	return telemetry.ToolFailed
+}
+
+func (o *Orchestrator) recordFileChange(change telemetry.FileChange, patch string) error {
+	if o.recorder == nil {
+		return nil
+	}
+	if patch != "" {
+		ref, err := o.recorder.Store().Put("text/x-diff", []byte(patch))
+		if err != nil {
+			return err
+		}
+		change.DiffArtifact = &ref
+	}
+	return o.recorder.RecordFileChange(context.Background(), change)
 }
 
 func statusFromErr(err error) string {
@@ -934,6 +1140,7 @@ func (e *runEmitter) emit(event model.StreamEvent) error {
 		return err
 	}
 	if err := e.store.AppendRunEvent(&model.RunEvent{EventID: event.EventID, RunID: e.run.ID,
+		RootRunID: e.run.Spec.RootRunID, ParentRunID: e.run.Spec.ParentRunID, TraceID: e.run.Spec.TraceID,
 		ConversationID: e.run.ConversationID, Sequence: event.Sequence, Type: event.Type,
 		Payload: payload, CreatedAt: event.Timestamp}); err != nil {
 		return fmt.Errorf("persist stream event: %w", err)

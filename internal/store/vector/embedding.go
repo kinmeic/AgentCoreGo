@@ -1,6 +1,8 @@
 package vector
 
 import (
+	"agent-core/internal/llm"
+	"agent-core/internal/telemetry"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Embedder is implemented by OpenAI-compatible and test embedding providers.
@@ -23,7 +27,11 @@ type EmbeddingClient struct {
 	model      string
 	dimensions int
 	httpClient *http.Client
+	recorder   *telemetry.Recorder
 }
+
+// SetRecorder enables embedding wire capture.
+func (c *EmbeddingClient) SetRecorder(recorder *telemetry.Recorder) { c.recorder = recorder }
 
 // NewEmbeddingClient creates a new embedding client.
 func NewEmbeddingClient(baseURL, apiKey, model string, dimensions int) *EmbeddingClient {
@@ -85,19 +93,30 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float3
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
+	startedAt := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		captureErr := c.capture(ctx, startedAt, jsonData, nil, nil, err)
+		if captureErr != nil {
+			return nil, captureErr
+		}
 		return nil, fmt.Errorf("embedding request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
 	if err != nil {
 		return nil, fmt.Errorf("read embedding response: %w", err)
 	}
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("embedding API error (%d): %s", resp.StatusCode, string(body))
+		apiErr := fmt.Errorf("embedding API error (%d)", resp.StatusCode)
+		if captureErr := c.capture(ctx, startedAt, jsonData, resp, body, apiErr); captureErr != nil {
+			return nil, captureErr
+		}
+		return nil, apiErr
+	}
+	if err := c.capture(ctx, startedAt, jsonData, resp, body, nil); err != nil {
+		return nil, err
 	}
 
 	var embResp embeddingResponse
@@ -126,6 +145,33 @@ func (c *EmbeddingClient) EmbedOne(ctx context.Context, text string) ([]float32,
 		return nil, fmt.Errorf("no embedding returned")
 	}
 	return results[0], nil
+}
+
+func (c *EmbeddingClient) capture(ctx context.Context, startedAt time.Time, request []byte, response *http.Response, body []byte, callErr error) error {
+	if c.recorder == nil {
+		return nil
+	}
+	metadata := llm.CallMetadataFromContext(ctx)
+	meta := telemetry.ModelCallMeta{RunID: metadata.RunID, RootID: metadata.RootID, ParentID: metadata.ParentID,
+		TraceID: metadata.TraceID, RequestID: uuid.NewString(), Purpose: telemetry.PurposeEmbedding,
+		Attempt: 1, Provider: "openai-embedding", Model: c.model, StartedAt: startedAt,
+		RequestHeaders: http.Header{"Content-Type": []string{"application/json"}, "Authorization": []string{"Bearer " + c.apiKey}}}
+	result := telemetry.CallResult{FinishedAt: time.Now(), Error: errorString(callErr)}
+	if response != nil {
+		meta.ResponseHeaders = response.Header.Clone()
+		result.HTTPStatus = response.StatusCode
+	}
+	if err := c.recorder.RecordModelCall(ctx, meta, request, body, nil, result); err != nil && c.recorder.Policy() == telemetry.CaptureTraining {
+		return fmt.Errorf("embedding capture failed: %w", err)
+	}
+	return nil
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // Dimensions returns the configured embedding dimensions.

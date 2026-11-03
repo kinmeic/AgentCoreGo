@@ -86,7 +86,7 @@ func TestLegacyMigrationCreatesBackup(t *testing.T) {
 		t.Fatalf("backup is unavailable: %v", err)
 	}
 	var version int
-	if err := s.DB().QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != 3 {
+	if err := s.DB().QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != 6 {
 		t.Fatalf("unexpected schema version %d: %v", version, err)
 	}
 }

@@ -2,20 +2,29 @@ package main
 
 import (
 	"agent-core/internal/agent"
+	"agent-core/internal/benchmark"
+	"agent-core/internal/commands"
 	"agent-core/internal/compressor"
 	"agent-core/internal/config"
 	"agent-core/internal/llm"
 	"agent-core/internal/mcp"
 	"agent-core/internal/memory"
 	"agent-core/internal/observability"
+	"agent-core/internal/project"
 	"agent-core/internal/prompt"
 	"agent-core/internal/sandbox"
 	"agent-core/internal/security"
 	"agent-core/internal/server"
+	"agent-core/internal/skills"
 	"agent-core/internal/store"
 	"agent-core/internal/store/vector"
+	"agent-core/internal/subagents"
+	"agent-core/internal/telemetry"
 	"agent-core/internal/tool"
 	"agent-core/internal/tool/builtin"
+	"agent-core/internal/trust"
+	"agent-core/internal/workflow"
+	"agent-core/internal/workspace"
 	"context"
 	"encoding/json"
 	"flag"
@@ -24,6 +33,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -50,7 +60,7 @@ func main() {
 	log.Println("[agent-core] Starting Agent Core...")
 
 	// Load configuration
-	cfg, err := config.Load(*configPath)
+	cfg, projectReport, err := loadEffectiveConfig(*configPath)
 	if err != nil {
 		log.Fatalf("[agent-core] Failed to load config: %v", err)
 	}
@@ -179,8 +189,20 @@ func main() {
 		cancel()
 	}
 
+	// Initialize model-io before any provider clients.
+	var recorder *telemetry.Recorder
+	if cfg.Features.ModelIO {
+		recorder, err = telemetry.NewRecorder(cfg.Telemetry.Directory, telemetry.CapturePolicy(cfg.Telemetry.Mode), cfg.Telemetry.QueueSize, cfg.Telemetry.MaxArtifactBytes)
+		if err != nil {
+			log.Fatalf("[agent-core] Failed to initialize model-io: %v", err)
+		}
+	}
+
 	// Initialize memory service
 	var embedder vector.Embedder
+	if recorder != nil && embClient != nil {
+		embClient.SetRecorder(recorder)
+	}
 	if embClient != nil {
 		embedder = embClient
 	}
@@ -200,6 +222,9 @@ func main() {
 	// Initialize LLM client (with optional failover)
 	var llmProvider llm.Provider
 	llmClient := llm.NewClient(cfg.LLM)
+	if recorder != nil {
+		llmClient.SetRecorder(recorder)
+	}
 	if len(cfg.LLM.Fallbacks) > 0 {
 		providers := []llm.Provider{llmClient}
 		for _, fb := range cfg.LLM.Fallbacks {
@@ -212,7 +237,11 @@ func main() {
 				MaxRetries:        cfg.LLM.MaxRetries,
 				MaxToolIterations: cfg.LLM.MaxToolIterations,
 			}
-			providers = append(providers, llm.NewClient(fbCfg))
+			client := llm.NewClient(fbCfg)
+			if recorder != nil {
+				client.SetRecorder(recorder)
+			}
+			providers = append(providers, client)
 		}
 		llmProvider = llm.NewFailoverClient(providers)
 		log.Printf("[agent-core] LLM failover initialized (%d providers)", len(providers))
@@ -231,13 +260,47 @@ func main() {
 		llmProvider, toolRegistry, processRegistry, dbStore, memService, comp, promptBuilder, cfg,
 	)
 	orchestrator.SetPermissionManager(permissions)
+	if recorder != nil {
+		orchestrator.SetRecorder(recorder)
+	}
 
 	// Initialize checkpoint store
 	checkpointStore := agent.NewSQLiteCheckpointStore(dbStore)
 	orchestrator.SetCheckpointStore(checkpointStore)
 
+	workspaceService, err := workspace.New(workspace.Config{Root: cfg.Workspace.Path,
+		StateDir: filepath.Join(filepath.Dir(cfg.Store.DBPath), "workspace")})
+	if err != nil {
+		log.Fatalf("[agent-core] Failed to initialize workspace service: %v", err)
+	}
+	trustManager := trust.NewManager(dbStore)
+	home, _ := os.UserHomeDir()
+	skillLoader := skills.NewLoader(skills.Options{Roots: cfg.Skills.Roots, ProjectDir: cfg.Workspace.Path, UserDir: home})
+	commandLoader := commands.NewLoader(commands.Options{Roots: cfg.Commands.Roots, ProjectDir: cfg.Workspace.Path, UserDir: home})
+	orchestrator.SetSkillLoader(skillLoader)
+	orchestrator.SetCommandLoader(commandLoader)
+	if cfg.Features.Skills {
+		if err := toolRegistry.Register(skills.NewTool(skillLoader, trustManager), tool.SourceBuiltin, "builtin"); err != nil {
+			log.Fatalf("[agent-core] Register skill tool: %v", err)
+		}
+	}
+	subagentManager := subagents.NewManager(dbStore, orchestrator)
+	if cfg.Features.Subagents {
+		if err := toolRegistry.Register(subagents.NewTool(subagentManager), tool.SourceBuiltin, "builtin"); err != nil {
+			log.Fatalf("[agent-core] Register subagent tool: %v", err)
+		}
+	}
+	workflowEngine := workflow.NewEngine(dbStore, orchestrator, toolRegistry, cfg)
+	benchmarkRunner, err := benchmark.NewRunner(filepath.Join(filepath.Dir(cfg.Store.DBPath), "benchmarks"))
+	if err != nil {
+		log.Fatalf("[agent-core] Failed to initialize benchmark runner: %v", err)
+	}
+
 	// Initialize HTTP server
 	srv := server.NewServer(cfg, orchestrator, toolRegistry, mcpManager, dbStore, memService)
+	srv.SetServices(server.Services{Workspace: workspaceService, Trust: trustManager,
+		Skills: skillLoader, Commands: commandLoader, Subagents: subagentManager,
+		Workflow: workflowEngine, Recorder: recorder, Benchmark: benchmarkRunner, Project: projectReport})
 
 	httpServer := &http.Server{
 		Addr:              cfg.Addr(),
@@ -279,12 +342,34 @@ func main() {
 	mcpManager.DisconnectAll()
 	processRegistry.KillAll()
 
-	// 4. Close database (after all handlers have finished)
+	// 4. Flush model-io before closing the database.
+	if recorder != nil {
+		if err := recorder.Close(); err != nil {
+			log.Printf("[agent-core] model-io close warning: %v", err)
+		}
+	}
+
+	// 5. Close database (after all handlers have finished)
 	if err := dbStore.Close(); err != nil {
 		log.Printf("[agent-core] Warning: database close error: %v", err)
 	}
 
 	log.Println("[agent-core] Shutdown complete")
+}
+
+func loadEffectiveConfig(path string) (config.Config, project.Report, error) {
+	home, _ := os.UserHomeDir()
+	userPath := filepath.Join(home, ".agent-core", "config.yaml")
+	cfg, err := config.LoadLayered(path, userPath)
+	if err != nil {
+		return cfg, project.Report{}, err
+	}
+	report, err := project.LoadAndApply(&cfg, cfg.Workspace.Path)
+	if err != nil {
+		return cfg, report, err
+	}
+	config.ApplyEnvOverrides(&cfg)
+	return cfg, report, nil
 }
 
 func printBanner(cfg config.Config) {
@@ -372,7 +457,7 @@ func runMCPServer() {
 	transport := mcpFlags.String("transport", "stdio", "Transport type (stdio)")
 	mcpFlags.Parse(os.Args[2:])
 
-	cfg, err := config.Load(*configPath)
+	cfg, _, err := loadEffectiveConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)

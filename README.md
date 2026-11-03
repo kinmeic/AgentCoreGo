@@ -12,6 +12,10 @@
 - **扩展与记忆**：Host Callback HMAC、长期记忆 CRUD/检索/consolidation/索引重建、可插拔向量开关。
 - **上下文管理**：Unicode/tool schema 预算、分级压缩、可持久化摘要、跨 chunk `<think>` 过滤、failover。
 - **工程能力**：薄 CLI、严格配置、CORS/限流/请求上限、结构化日志、readiness、指标、测试与容器部署。
+- **扩展生态**：项目配置层级与 Workspace Trust、Skills、内置/自定义 Slash Commands、RunSpec 固定扩展版本。
+- **任务编排**：Subagents、声明式 YAML/JSON DAG Workflow、fan-out、节点缓存与恢复。
+- **快照与 Web IDE**：完整文件树快照、冲突检查与补偿恢复，Workspace/Git/运行/变更直接管理 API。
+- **model-io 与评测**：原始 provider wire、工具/文件轨迹、redacted/training 采集、独立隔离 benchmark 与 grader。
 
 > **安全边界**：文件工具有 workspace 路径与符号链接防护；终端命令拥有 AgentCore 进程的操作系统权限，**不是 OS 沙箱**。非 loopback 监听必须设置 `AUTH_TOKEN` 且禁用终端。当前会话、记忆和工具注册表是单租户共享状态，不是多租户隔离边界。
 
@@ -118,6 +122,11 @@ curl -N -X POST "http://127.0.0.1:8900/v1/runs/$RUN_ID/resume" \
 ## 文档
 
 - [配置与环境变量](docs/configuration.md)
+- [Skills 与 Slash Commands](docs/commands.md)
+- [项目配置、Trust、Subagents 与 Workflow](docs/extensions.md)
+- [Web IDE 与快照](docs/web-ide.md)
+- [model-io 与自动化轨迹](docs/trajectory.md)
+- [Benchmark 体系](docs/benchmark.md)
 - [权限模式与安全策略](docs/permissions.md)
 - [MCP 与 Host Callback](docs/mcp.md)
 - [安全模型](docs/security.md)

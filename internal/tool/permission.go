@@ -65,12 +65,17 @@ func (m *PermissionManager) Authorize(ctx context.Context, registered *Registere
 		return errors.New("tool is not registered")
 	}
 	caps := registered.Capabilities
-	decision := m.decision(caps)
+	info, hasInfo := ExecutionInfoFromContext(ctx)
+	mode := m.mode
+	if hasInfo && info.Mode != "" {
+		mode = info.Mode
+	}
+	decision := m.decisionForMode(mode, caps)
 	if decision == "allow" {
 		return nil
 	}
 	if decision == "deny" {
-		return fmt.Errorf("permission denied in %s mode for %s", m.mode, registered.Provider.Name())
+		return fmt.Errorf("permission denied in %s mode for %s", mode, registered.Provider.Name())
 	}
 	info, ok := ExecutionInfoFromContext(ctx)
 	if !ok || !info.Interactive || info.Emit == nil {
@@ -171,8 +176,8 @@ func redactPreviewValue(value any) any {
 	}
 }
 
-func (m *PermissionManager) decision(caps Capabilities) string {
-	switch m.mode {
+func (m *PermissionManager) decisionForMode(mode string, caps Capabilities) string {
+	switch mode {
 	case "plan":
 		if caps.ReadOnly {
 			return "allow"

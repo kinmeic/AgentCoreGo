@@ -19,7 +19,7 @@ import (
 	"strings"
 )
 
-const agentCoreVersion = "0.2.0"
+const agentCoreVersion = "0.3.0"
 
 type apiClient struct {
 	baseURL string
@@ -98,6 +98,16 @@ func runCLI(args []string) (bool, int) {
 		err = cliLogs(args[1:])
 	case "tools":
 		err = cliTools(args[1:])
+	case "skills":
+		err = cliSkills(args[1:])
+	case "workflows":
+		err = cliWorkflows(args[1:])
+	case "snapshots":
+		err = cliSnapshots(args[1:])
+	case "trust":
+		err = cliTrust(args[1:])
+	case "benchmarks":
+		err = cliBenchmarks(args[1:])
 	case "memory":
 		err = cliMemory(args[1:])
 	case "mcp":
@@ -397,7 +407,7 @@ func cliDoctor(args []string) error {
 	result := map[string]any{"version": agentCoreVersion, "go": runtime.Version(), "platform": runtime.GOOS + "/" + runtime.GOARCH, "executable": filepath.Clean(executable)}
 	failed := false
 	if *configPath != "" {
-		cfg, err := config.Load(*configPath)
+		cfg, _, err := loadEffectiveConfig(*configPath)
 		if err == nil {
 			err = cfg.Validate(config.ModeHTTP)
 		}
@@ -435,7 +445,7 @@ func cliConfig(args []string) error {
 	if err := set.Parse(args[1:]); err != nil {
 		return err
 	}
-	cfg, err := config.Load(*path)
+	cfg, _, err := loadEffectiveConfig(*path)
 	if err == nil {
 		err = cfg.Validate(config.ModeHTTP)
 	}

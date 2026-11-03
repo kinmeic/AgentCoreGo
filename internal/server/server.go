@@ -28,6 +28,7 @@ type Server struct {
 	mcpManager   *mcp.Manager
 	store        *store.SQLite
 	memService   *memory.Service
+	services     Services
 	mux          *http.ServeMux
 	metrics      serverMetrics
 	handlerOnce  sync.Once
@@ -70,6 +71,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/runs/{id}/stop", s.handleStopRun)
 	s.mux.HandleFunc("POST /v1/runs/{id}/resume", s.handleResumeRun)
 	s.mux.HandleFunc("GET /v1/runs/{id}/events", s.handleRunEvents)
+	s.mux.HandleFunc("GET /v1/runs/{id}/events/stream", s.handleRunEventStream)
 	s.mux.HandleFunc("GET /v1/approvals", s.handlePendingApprovals)
 	s.mux.HandleFunc("POST /v1/approvals/{id}", s.handleRespondApproval)
 
@@ -97,6 +99,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/mcp", s.handleListMCP)
 	s.mux.HandleFunc("POST /v1/mcp", s.handleConnectMCP)
 	s.mux.HandleFunc("DELETE /v1/mcp/{name}", s.handleDisconnectMCP)
+
+	// Extension, workspace and execution control plane
+	s.registerExtensionRoutes()
 
 	// Health and diagnostics
 	s.mux.HandleFunc("GET /health", s.handleHealth)
@@ -164,7 +169,16 @@ func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.orchestrator.ChatSync(r.Context(), req)
+	resolved, local, err := s.resolveChat(r.Context(), req)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if local != nil {
+		respondJSON(w, http.StatusOK, local)
+		return
+	}
+	resp, err := s.orchestrator.ChatSync(r.Context(), resolved)
 	if err != nil {
 		respondRunError(w, err)
 		return
@@ -185,10 +199,24 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resolved, local, err := s.resolveChat(r.Context(), req)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if local != nil {
+		events := make(chan model.StreamEvent, 2)
+		data, _ := json.Marshal(local)
+		events <- model.StreamEvent{Type: "command.result", Content: string(data), Timestamp: time.Now()}
+		events <- model.StreamEvent{Type: "done", Reply: local.Reply, Timestamp: time.Now()}
+		close(events)
+		s.serveEventStream(w, r, events)
+		return
+	}
 	runCtx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	events := make(chan model.StreamEvent, 64)
-	go s.orchestrator.ChatStream(runCtx, req, events)
+	go s.orchestrator.ChatStream(runCtx, resolved, events)
 	s.serveEventStream(w, r, events)
 }
 

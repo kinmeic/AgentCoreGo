@@ -55,7 +55,7 @@ func (t *FileEditTool) Execute(ctx context.Context, args map[string]any) (string
 	if err != nil {
 		return "", err
 	}
-	if err := emitFileChange(ctx, path, "edit"); err != nil {
+	if err := emitFileChange(ctx, path, "edit", result); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -96,7 +96,7 @@ func (t *FileDeleteTool) Execute(ctx context.Context, args map[string]any) (stri
 	if err := os.Remove(path); err != nil {
 		return "", err
 	}
-	if err := emitFileChange(ctx, path, "delete"); err != nil {
+	if err := emitFileChange(ctx, path, "delete", fmt.Sprintf(`{"before_revision":%q}`, revision)); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Deleted %s", path), nil
@@ -158,7 +158,7 @@ func (t *FileMoveTool) Execute(ctx context.Context, args map[string]any) (string
 	if err := os.Rename(source, destination); err != nil {
 		return "", err
 	}
-	if err := emitFileChange(ctx, source+" -> "+destination, "move"); err != nil {
+	if err := emitFileChange(ctx, source+" -> "+destination, "move", fmt.Sprintf(`{"before_revision":%q}`, revision)); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Moved %s to %s", source, destination), nil

@@ -208,7 +208,13 @@ func (s *SQLite) CommitToolResult(log *model.ConversationLog, checkpoint []byte)
 		return err
 	}
 	now := time.Now()
-	if _, err := tx.Exec(`INSERT INTO checkpoints(conversation_id, data, created_at) VALUES (?, ?, ?)
+	if log.RunID != "" {
+		if _, err := tx.Exec(`INSERT INTO run_checkpoints(run_id, conversation_id, data, created_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT(run_id) DO UPDATE SET data=excluded.data, created_at=excluded.created_at`,
+			log.RunID, log.ConversationID, checkpoint, now); err != nil {
+			return err
+		}
+	} else if _, err := tx.Exec(`INSERT INTO checkpoints(conversation_id, data, created_at) VALUES (?, ?, ?)
 		ON CONFLICT(conversation_id) DO UPDATE SET data=excluded.data, created_at=excluded.created_at`,
 		log.ConversationID, checkpoint, now); err != nil {
 		return err
@@ -405,29 +411,37 @@ func (s *SQLite) DeleteMCPServer(name string) error {
 
 // --- Checkpoint Operations ---
 
-// SaveCheckpointData saves checkpoint data for a conversation.
-func (s *SQLite) SaveCheckpointData(convID string, data []byte) error {
+// SaveCheckpointData saves a run-scoped checkpoint.
+func (s *SQLite) SaveCheckpointData(runID, conversationID string, data []byte) error {
 	now := time.Now()
-	_, err := s.db.Exec(
-		`INSERT INTO checkpoints (conversation_id, data, created_at) VALUES (?, ?, ?)
-		 ON CONFLICT(conversation_id) DO UPDATE SET data = ?, created_at = ?`,
-		convID, data, now, data, now,
-	)
+	_, err := s.db.Exec(`INSERT INTO run_checkpoints(run_id, conversation_id, data, created_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT(run_id) DO UPDATE SET data=excluded.data, created_at=excluded.created_at`,
+		runID, conversationID, data, now)
 	return err
 }
 
-// LoadCheckpointData loads checkpoint data for a conversation.
-func (s *SQLite) LoadCheckpointData(convID string) ([]byte, error) {
+// LoadCheckpointData loads a checkpoint by exact run ID.
+func (s *SQLite) LoadCheckpointData(runID string) ([]byte, error) {
 	var data []byte
-	err := s.db.QueryRow(`SELECT data FROM checkpoints WHERE conversation_id = ?`, convID).Scan(&data)
+	err := s.db.QueryRow(`SELECT data FROM run_checkpoints WHERE run_id = ?`, runID).Scan(&data)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	return data, err
 }
 
-// DeleteCheckpointData removes checkpoint data for a conversation.
-func (s *SQLite) DeleteCheckpointData(convID string) error {
-	_, err := s.db.Exec(`DELETE FROM checkpoints WHERE conversation_id = ?`, convID)
+// LoadLegacyCheckpointData reads the pre-v4 conversation-scoped format.
+func (s *SQLite) LoadLegacyCheckpointData(conversationID string) ([]byte, error) {
+	var data []byte
+	err := s.db.QueryRow(`SELECT data FROM checkpoints WHERE conversation_id = ?`, conversationID).Scan(&data)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return data, err
+}
+
+// DeleteCheckpointData deletes only the specified run's checkpoint.
+func (s *SQLite) DeleteCheckpointData(runID string) error {
+	_, err := s.db.Exec(`DELETE FROM run_checkpoints WHERE run_id = ?`, runID)
 	return err
 }

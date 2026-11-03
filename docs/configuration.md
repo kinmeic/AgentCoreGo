@@ -89,6 +89,17 @@ workspace:
 
 自定义策略在默认策略之后追加，deny 始终优先于审批模式。支持 `allow/deny/audit`，资源 `file/terminal/web/memory`，条件操作 `contains/prefix/suffix/equals/in/regex`。regex 使用 Go RE2；空值和无效表达式启动失败。
 
+## 扩展与采集配置
+
+- `features.skills/commands/subagents/workflow/model_io`：总开关。
+- `ui.locale`：`auto/en-US/zh-CN`。
+- `skills.roots/metadata_budget`：额外 Skill roots 与 prompt metadata 预算。
+- `commands.roots/metadata_budget/max_command_bytes`：自定义命令 roots 与大小限制。
+- `workflow.enabled/roots/max_nodes/max_concurrency/max_agent_calls/timeout_seconds`：声明式 DAG 执行预算。
+- `telemetry.mode/directory/queue_size/max_artifact_bytes/retention_files`：redacted/training 采集、异步队列和 artifact 预算。
+
+详见 [扩展配置](extensions.md)、[model-io](trajectory.md) 和 [Web IDE](web-ide.md)。
+
 ## 环境变量
 
 | 变量 | 覆盖项 |

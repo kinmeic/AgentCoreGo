@@ -3,6 +3,7 @@ package compressor
 import (
 	"agent-core/internal/llm"
 	"agent-core/internal/model"
+	"agent-core/internal/telemetry"
 	"context"
 	"errors"
 	"strings"
@@ -20,7 +21,9 @@ func (s *ProviderSummarizer) SummarizeMessages(ctx context.Context, messages []m
 		return SummaryResult{}
 	}
 	prompt := buildSummaryPrompt(formatConversationForSummary(messages))
-	response, _, err := s.provider.Complete(ctx, []model.Message{{Role: model.RoleUser, Content: prompt}}, nil)
+	metadata := llm.CallMetadataFromContext(ctx)
+	metadata.Purpose = telemetry.PurposeCompact
+	response, _, err := s.provider.Complete(llm.WithCallMetadata(ctx, metadata), []model.Message{{Role: model.RoleUser, Content: prompt}}, nil)
 	if err != nil || response == nil || strings.TrimSpace(response.Content) == "" {
 		if err == nil {
 			err = errors.New("empty summary response")

@@ -4,15 +4,16 @@ import (
 	"encoding/json"
 	"time"
 
+	"agent-core/internal/llm"
 	"agent-core/internal/model"
 	"agent-core/internal/tool"
 )
 
-// Checkpoint captures a resumable boundary. InFlight identifies a tool whose
-// result was not committed; side-effecting tools require an explicit resume strategy.
+// Checkpoint is a run-scoped resumable boundary with an immutable execution manifest.
 type Checkpoint struct {
 	ConversationID string               `json:"conversation_id"`
 	RunID          string               `json:"run_id"`
+	Spec           model.RunSpec        `json:"spec"`
 	Iteration      int                  `json:"iteration"`
 	Messages       []model.Message      `json:"messages"`
 	Actions        []model.Action       `json:"actions"`
@@ -20,6 +21,7 @@ type Checkpoint struct {
 	InFlight       *model.ToolCall      `json:"in_flight_tool_call,omitempty"`
 	Discovered     []string             `json:"discovered_tools,omitempty"`
 	Discovery      *tool.DiscoveryState `json:"-"`
+	Provider       llm.Provider         `json:"-"`
 	PromptTokens   int                  `json:"prompt_tokens"`
 	ComplTokens    int                  `json:"completion_tokens"`
 	TotalTokens    int                  `json:"total_tokens"`
@@ -27,20 +29,19 @@ type Checkpoint struct {
 	Completed      bool                 `json:"completed"`
 }
 
-// CheckpointStore provides persistence for checkpoints.
 type CheckpointStore interface {
 	SaveCheckpoint(cp *Checkpoint) error
-	LoadCheckpoint(convID string) (*Checkpoint, error)
-	DeleteCheckpoint(convID string) error
+	LoadCheckpoint(runID, conversationID string) (*Checkpoint, error)
+	DeleteCheckpoint(runID string) error
 }
 
-// SQLiteCheckpointStore implements CheckpointStore using SQLite.
 type SQLiteCheckpointStore struct{ store checkpointDB }
 
 type checkpointDB interface {
-	SaveCheckpointData(convID string, data []byte) error
-	LoadCheckpointData(convID string) ([]byte, error)
-	DeleteCheckpointData(convID string) error
+	SaveCheckpointData(runID, conversationID string, data []byte) error
+	LoadCheckpointData(runID string) ([]byte, error)
+	LoadLegacyCheckpointData(conversationID string) ([]byte, error)
+	DeleteCheckpointData(runID string) error
 }
 
 func NewSQLiteCheckpointStore(db checkpointDB) *SQLiteCheckpointStore {
@@ -53,21 +54,35 @@ func (s *SQLiteCheckpointStore) SaveCheckpoint(cp *Checkpoint) error {
 	if err != nil {
 		return err
 	}
-	return s.store.SaveCheckpointData(cp.ConversationID, data)
+	return s.store.SaveCheckpointData(cp.RunID, cp.ConversationID, data)
 }
 
-func (s *SQLiteCheckpointStore) LoadCheckpoint(convID string) (*Checkpoint, error) {
-	data, err := s.store.LoadCheckpointData(convID)
-	if err != nil || data == nil {
+func (s *SQLiteCheckpointStore) LoadCheckpoint(runID, conversationID string) (*Checkpoint, error) {
+	data, err := s.store.LoadCheckpointData(runID)
+	if err != nil {
 		return nil, err
+	}
+	legacy := false
+	if data == nil {
+		data, err = s.store.LoadLegacyCheckpointData(conversationID)
+		legacy = true
+		if err != nil || data == nil {
+			return nil, err
+		}
 	}
 	var cp Checkpoint
 	if err := json.Unmarshal(data, &cp); err != nil {
 		return nil, err
 	}
+	if cp.RunID != "" && cp.RunID != runID {
+		return nil, nil
+	}
+	if legacy {
+		cp.RunID = runID
+	}
 	return &cp, nil
 }
 
-func (s *SQLiteCheckpointStore) DeleteCheckpoint(convID string) error {
-	return s.store.DeleteCheckpointData(convID)
+func (s *SQLiteCheckpointStore) DeleteCheckpoint(runID string) error {
+	return s.store.DeleteCheckpointData(runID)
 }

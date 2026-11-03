@@ -98,7 +98,7 @@ func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) error {
 	handshakeCtx, handshakeCancel := context.WithCancel(connCtx)
 	conn := &clientConn{name: cfg.Name, transport: cfg.Transport, config: cfg.Config,
 		cancel: func() { handshakeCancel(); cancel() }}
-	client := sdk.NewClient(&sdk.Implementation{Name: "agent-core", Version: "1.0.0"},
+	client := sdk.NewClient(&sdk.Implementation{Name: "agent-core", Version: "0.3.0"},
 		&sdk.ClientOptions{Capabilities: &sdk.ClientCapabilities{}, KeepAlive: 30 * time.Second})
 	transport, command, err := m.transport(connCtx, cfg)
 	if err != nil {

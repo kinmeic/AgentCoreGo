@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"agent-core/internal/model"
+	"agent-core/internal/telemetry"
 )
 
 // Capabilities declares the security and execution properties of a tool.
@@ -47,13 +48,18 @@ func DefaultCapabilities(source Source) Capabilities {
 
 // ExecutionInfo correlates a tool invocation with its durable run.
 type ExecutionInfo struct {
-	ConversationID string
-	RunID          string
-	ToolCallID     string
-	Interactive    bool
-	Discovery      *DiscoveryState
-	Emit           func(model.StreamEvent) error
-	OnStatus       func(model.RunStatus)
+	ConversationID   string
+	RunID            string
+	RootRunID        string
+	ParentRunID      string
+	TraceID          string
+	ToolCallID       string
+	Interactive      bool
+	Mode             string
+	Discovery        *DiscoveryState
+	Emit             func(model.StreamEvent) error
+	OnStatus         func(model.RunStatus)
+	RecordFileChange func(telemetry.FileChange, string) error
 }
 
 type executionInfoKey struct{}

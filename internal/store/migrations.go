@@ -107,6 +107,54 @@ var schemaMigrations = []schemaMigration{
 			`ALTER TABLE host_callbacks ADD COLUMN allow_private BOOLEAN DEFAULT 0`,
 		},
 	},
+	{
+		version: 4,
+		sql: []string{
+			`ALTER TABLE runs ADD COLUMN parent_run_id TEXT`,
+			`ALTER TABLE runs ADD COLUMN root_run_id TEXT`,
+			`ALTER TABLE runs ADD COLUMN depth INTEGER DEFAULT 0`,
+			`ALTER TABLE runs ADD COLUMN kind TEXT DEFAULT 'root'`,
+			`ALTER TABLE runs ADD COLUMN spec JSON`,
+			`ALTER TABLE run_events ADD COLUMN root_run_id TEXT`,
+			`ALTER TABLE run_events ADD COLUMN parent_run_id TEXT`,
+			`ALTER TABLE run_events ADD COLUMN trace_id TEXT`,
+			`CREATE TABLE IF NOT EXISTS run_checkpoints (
+				run_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, data JSON NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_run_checkpoints_conversation ON run_checkpoints(conversation_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_runs_lineage ON runs(root_run_id, parent_run_id)`,
+		},
+	},
+	{
+		version: 5,
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS workspace_trust (
+				workspace_id TEXT NOT NULL, bundle_digest TEXT NOT NULL, declarations JSON NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY(workspace_id, bundle_digest)
+			)`,
+		},
+	},
+	{
+		version: 6,
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS workflow_runs (
+				id TEXT PRIMARY KEY, definition JSON NOT NULL, definition_digest TEXT NOT NULL,
+				status TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`CREATE TABLE IF NOT EXISTS workflow_nodes (
+				run_id TEXT NOT NULL, node_id TEXT NOT NULL, attempt INTEGER NOT NULL,
+				input_hash TEXT NOT NULL, status TEXT NOT NULL, result JSON, error TEXT,
+				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY(run_id, node_id, attempt),
+				FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_workflow_nodes_cache ON workflow_nodes(run_id, node_id, input_hash, status)`,
+		},
+	},
 }
 
 func migrationChecksum(m schemaMigration) string {

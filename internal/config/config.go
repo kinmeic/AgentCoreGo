@@ -23,6 +23,12 @@ type Config struct {
 	Tools       ToolsConfig       `yaml:"tools"`
 	Memory      MemoryConfig      `yaml:"memory"`
 	Security    SecurityConfig    `yaml:"security"`
+	Features    FeatureConfig     `yaml:"features"`
+	UI          UIConfig          `yaml:"ui"`
+	Skills      SkillsConfig      `yaml:"skills"`
+	Commands    CommandsConfig    `yaml:"commands"`
+	Workflow    WorkflowConfig    `yaml:"workflow"`
+	Telemetry   TelemetryConfig   `yaml:"telemetry"`
 }
 
 type WorkspaceConfig struct {
@@ -95,6 +101,41 @@ type SecurityConfig struct {
 	Policies []security.Policy `yaml:"policies"`
 }
 
+type FeatureConfig struct {
+	Skills    bool `yaml:"skills"`
+	Commands  bool `yaml:"commands"`
+	Subagents bool `yaml:"subagents"`
+	Workflow  bool `yaml:"workflow"`
+	ModelIO   bool `yaml:"model_io"`
+}
+type UIConfig struct {
+	Locale string `yaml:"locale"`
+}
+type SkillsConfig struct {
+	Roots          []string `yaml:"roots"`
+	MetadataBudget int      `yaml:"metadata_budget"`
+}
+type CommandsConfig struct {
+	Roots           []string `yaml:"roots"`
+	MetadataBudget  int      `yaml:"metadata_budget"`
+	MaxCommandBytes int      `yaml:"max_command_bytes"`
+}
+type WorkflowConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	Roots          []string `yaml:"roots"`
+	MaxNodes       int      `yaml:"max_nodes"`
+	MaxConcurrency int      `yaml:"max_concurrency"`
+	MaxAgentCalls  int      `yaml:"max_agent_calls"`
+	TimeoutSeconds int      `yaml:"timeout_seconds"`
+}
+type TelemetryConfig struct {
+	Mode             string `yaml:"mode"`
+	Directory        string `yaml:"directory"`
+	QueueSize        int    `yaml:"queue_size"`
+	MaxArtifactBytes int64  `yaml:"max_artifact_bytes"`
+	RetentionFiles   int    `yaml:"retention_files"`
+}
+
 func DefaultConfig() Config {
 	return Config{
 		Server: ServerConfig{Host: "127.0.0.1", Port: 8900, MaxRequestBytes: 1024 * 1024,
@@ -108,21 +149,43 @@ func DefaultConfig() Config {
 		Compression: CompressionConfig{ThresholdPercent: 0.50, ProtectFirstN: 3, ProtectLastN: 20, TargetRatio: 0.20},
 		Tools:       ToolsConfig{ApprovalMode: "smart", TerminalEnabled: true, ProgressiveTools: true, ToolSearchThreshold: 10},
 		Memory:      MemoryConfig{CapacityLimit: 200, ConsolidationThreshold: 160, AutoNudge: true},
+		Features:    FeatureConfig{Skills: true, Commands: true, Subagents: true, Workflow: true, ModelIO: true},
+		UI:          UIConfig{Locale: "zh-CN"},
+		Skills:      SkillsConfig{MetadataBudget: 8192},
+		Commands:    CommandsConfig{MetadataBudget: 8192, MaxCommandBytes: 100_000},
+		Workflow:    WorkflowConfig{Enabled: true, MaxNodes: 100, MaxConcurrency: 4, MaxAgentCalls: 50, TimeoutSeconds: 1800},
+		Telemetry:   TelemetryConfig{Mode: "redacted", Directory: "./data/model-io", QueueSize: 256, MaxArtifactBytes: 4 * 1024 * 1024, RetentionFiles: 100},
 	}
 }
 
-func Load(path string) (Config, error) {
+func Load(path string) (Config, error) { return loadConfigFiles(path) }
+
+// LoadLayered applies user configuration before the explicit project/service file.
+func LoadLayered(path, userPath string) (Config, error) {
+	if userPath == path {
+		return loadConfigFiles(path)
+	}
+	return loadConfigFiles(userPath, path)
+}
+
+func loadConfigFiles(paths ...string) (Config, error) {
 	cfg := DefaultConfig()
 	workspaceExplicit, workDirExplicit := false, false
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return cfg, fmt.Errorf("read config file: %w", err)
-	}
-	if err == nil {
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return cfg, fmt.Errorf("read config file %s: %w", path, err)
+		}
 		decoder := yaml.NewDecoder(strings.NewReader(string(data)))
 		decoder.KnownFields(true)
 		if err := decoder.Decode(&cfg); err != nil {
-			return cfg, fmt.Errorf("parse config file: %w", err)
+			return cfg, fmt.Errorf("parse config file %s: %w", path, err)
 		}
 		if err := ensureSingleDocument(decoder); err != nil {
 			return cfg, err
@@ -138,8 +201,8 @@ func Load(path string) (Config, error) {
 		if err := yaml.Unmarshal(data, &explicit); err != nil {
 			return cfg, err
 		}
-		workspaceExplicit = explicit.Workspace.Path != nil
-		workDirExplicit = explicit.Tools.WorkDir != nil
+		workspaceExplicit = workspaceExplicit || explicit.Workspace.Path != nil
+		workDirExplicit = workDirExplicit || explicit.Tools.WorkDir != nil
 	}
 	applyEnvOverrides(&cfg)
 	if err := normalizePaths(&cfg, workspaceExplicit, workDirExplicit); err != nil {
@@ -195,6 +258,9 @@ func applyEnvOverrides(cfg *Config) {
 	setString("WORK_DIR", &cfg.Tools.WorkDir)
 	setString("AGENT_CORE_WORKSPACE", &cfg.Workspace.Path)
 }
+
+// ApplyEnvOverrides reapplies environment precedence after project-layer merging.
+func ApplyEnvOverrides(cfg *Config) { applyEnvOverrides(cfg) }
 
 func normalizePaths(cfg *Config, workspaceExplicit, workDirExplicit bool) error {
 	workspaceEnv := os.Getenv("AGENT_CORE_WORKSPACE") != ""
@@ -325,6 +391,21 @@ func (c *Config) Validate(mode ValidateMode) error {
 				}
 			}
 		}
+	}
+	if c.Skills.MetadataBudget <= 0 || c.Commands.MetadataBudget <= 0 || c.Commands.MaxCommandBytes <= 0 {
+		return fmt.Errorf("skill and command budgets must be positive")
+	}
+	if c.Workflow.MaxNodes <= 0 || c.Workflow.MaxConcurrency <= 0 || c.Workflow.MaxAgentCalls <= 0 || c.Workflow.TimeoutSeconds <= 0 {
+		return fmt.Errorf("workflow limits must be positive")
+	}
+	if c.Telemetry.Mode != "redacted" && c.Telemetry.Mode != "training" {
+		return fmt.Errorf("telemetry.mode must be redacted or training")
+	}
+	if c.Features.ModelIO && (c.Telemetry.Directory == "" || c.Telemetry.QueueSize <= 0 || c.Telemetry.MaxArtifactBytes <= 0 || c.Telemetry.RetentionFiles <= 0) {
+		return fmt.Errorf("invalid model-io capture limits")
+	}
+	if c.UI.Locale != "auto" && c.UI.Locale != "en-US" && c.UI.Locale != "zh-CN" {
+		return fmt.Errorf("ui.locale must be auto, en-US, or zh-CN")
 	}
 	if mode == ModeHTTP {
 		host := c.Server.Host

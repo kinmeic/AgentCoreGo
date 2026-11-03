@@ -68,3 +68,37 @@ security:
   #       - field: target
   #         operator: regex
   #         values: ['(^|\\s)sudo(\\s|$)']
+
+features:
+  skills: true
+  commands: true
+  subagents: true
+  workflow: true
+  model_io: true
+
+ui:
+  locale: "zh-CN" # auto, en-US, or zh-CN
+
+skills:
+  roots: [] # Additional directories containing */SKILL.md
+  metadata_budget: 8192
+
+commands:
+  roots: [] # Additional directories containing Markdown commands
+  metadata_budget: 8192
+  max_command_bytes: 100000
+
+workflow:
+  enabled: true
+  roots: [] # Declarative YAML/JSON DAG definitions only
+  max_nodes: 100
+  max_concurrency: 4
+  max_agent_calls: 50
+  timeout_seconds: 1800
+
+telemetry:
+  mode: "redacted" # redacted diagnostics or explicit training capture
+  directory: "./data/model-io"
+  queue_size: 256
+  max_artifact_bytes: 4194304
+  retention_files: 100
