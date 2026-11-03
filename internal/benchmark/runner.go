@@ -210,6 +210,7 @@ func (r *Runner) executeAgent(ctx context.Context, plan *Plan, promptText, works
 	cfg.Store.DBPath = filepath.Join(home, "agent.db")
 	cfg.Store.VectorBackend = "none"
 	cfg.LLM.BaseURL = plan.Manifest.BaseURL
+	cfg.LLM.APIFormat = plan.Manifest.APIFormat
 	cfg.LLM.APIKey = plan.Manifest.APIKey
 	cfg.LLM.Model = plan.Manifest.Model
 	cfg.LLM.MaxRetries = 0

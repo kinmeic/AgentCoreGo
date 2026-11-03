@@ -4,7 +4,7 @@
 [![Go](https://img.shields.io/badge/Go-1.26.10-00ADD8?logo=go)](https://go.dev/dl/)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-轻量级 Go AI Agent 服务端，支持 OpenAI 兼容模型、MCP、权限审批、子代理与工作流编排，基于 SQLite 持久化。
+轻量级 Go AI Agent 服务端，支持 OpenAI 兼容接口与 Anthropic Messages API、MCP、权限审批、子代理与工作流编排，基于 SQLite 持久化。
 
 面向自托管的编程助手和自动化任务，以 Go 单二进制提供 HTTP JSON/SSE API 与 CLI，可接入 IDE、自动化平台或自定义前端。服务采用单租户、单 workspace 模型，支持持久化工具执行、会话恢复和文件快照。
 
@@ -12,6 +12,7 @@
 
 ## 已实现能力
 
+- **模型接入**：OpenAI Chat Completions 与 Anthropic Messages 原生协议，同步/流式响应、工具调用，以及可分别配置协议的备用模型。
 - **可靠 Agent 运行**：同步/流式共用执行路径，独立 `run_id`，统一 `done | error | cancelled` 终态、迭代/token/时长/并发预算。
 - **会话与恢复**：完整 tool-call/tool-result 历史、版本化 SQLite 迁移、启动前备份、事件游标、原子工具 checkpoint、显式 resume。
 - **工具与权限**：离线 JSON Schema 校验、能力声明、plan/build/edit/guarded/yolo、异步审批、会话级授权、静态 deny 优先。
@@ -60,6 +61,21 @@ export EMBEDDING_API_KEY="$LLM_API_KEY"
 编辑 [agent-core.yaml](agent-core.yaml)。`workspace.path` 是所有 workspace 工具的唯一目录来源；旧 `tools.work_dir` / `WORK_DIR` 仅作兼容映射，不应与 workspace 设置成不同路径。
 
 按使用的模型服务设置 `llm.base_url`、`llm.model` 和 `LLM_API_KEY`。工作区默认位于 `./workspace`，SQLite 数据库默认位于 `./data/agent.db`。API key 通过环境变量传入。
+
+### 使用 Anthropic Messages
+
+将配置中的 `llm` 切换为原生 Messages 格式，并填写有权限访问的 Claude 模型 ID：
+
+```yaml
+llm:
+  api_format: anthropic
+  base_url: https://api.anthropic.com/v1
+  api_key: "${LLM_API_KEY}"
+  model: your-claude-model-id
+  max_output_tokens: 4096
+```
+
+使用 `LLM_API_KEY` 注入 Anthropic key。也可用 `LLM_API_FORMAT`、`LLM_BASE_URL`、`LLM_MODEL` 覆盖对应配置；已有配置未指定协议时继续使用 OpenAI 格式。当前 Anthropic 适配支持文本和客户端工具调用，显式禁用 extended thinking；完整参数说明与混合协议 fallback 示例见 [配置文档](docs/configuration.md#anthropic-messages)。
 
 ### 启动
 

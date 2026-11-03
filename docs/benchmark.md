@@ -5,6 +5,7 @@
 ```yaml
 schema_version: 1
 name: smoke-test
+api_format: openai # or anthropic for native /v1/messages
 base_url: http://127.0.0.1:9000/v1
 api_key: ""
 model: mock-model
@@ -28,6 +29,8 @@ cases:
 
 完整 plan 在第一次模型请求前持久化，包含 manifest digest、case、并发、重复次数、provider/model 和状态。
 
+`api_format` 默认为 `openai`；使用 Anthropic 时设为 `anthropic`，并填写 Messages API 地址、API key 和 Claude 模型 ID。每个 case 的主 Agent、压缩摘要与标题请求均复用所选协议。
+
 ## 隔离与评分
 
 每个 case/repetition 都使用独立：
@@ -45,8 +48,8 @@ Agent 执行失败与 grader 失败是不同事实。plan `completed` 只表示�
 
 ```bash
 ./agent-core benchmarks start --file benchmark.yaml
-./agent-core benchmarks show --id <plan-id>
-./agent-core benchmarks cancel --id <plan-id>
+./agent-core benchmarks show --id "$PLAN_ID"
+./agent-core benchmarks cancel --id "$PLAN_ID"
 ```
 
 报告包含 `plan.json` 和 `results.jsonl`：duration、TTFB、usage、run/conversation、错误、stdout/grader 证据和完成时间。写盘失败停止新的模型请求，已有部分结果仍可离线读取。

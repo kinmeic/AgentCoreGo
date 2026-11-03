@@ -53,7 +53,7 @@ func (c *Client) capture(ctx context.Context, attempt int, startedAt time.Time, 
 		meta.ResponseHeaders = response.Header.Clone()
 		result.HTTPStatus = response.StatusCode
 	}
-	meta.RequestHeaders = http.Header{"Content-Type": []string{"application/json"}, "Authorization": []string{"Bearer " + c.cfg.APIKey}}
+	meta.RequestHeaders = c.requestHeaders()
 	if callErr != nil {
 		result.Error = callErr.Error()
 	}

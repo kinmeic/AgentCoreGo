@@ -84,3 +84,40 @@ func TestRegexPolicyRequiresValues(t *testing.T) {
 		t.Fatal("expected an empty regex policy to fail validation")
 	}
 }
+
+func TestLLMAPIFormatDefaultsValidationAndEnvironment(t *testing.T) {
+	if DefaultConfig().LLM.APIFormat != APIFormatOpenAI {
+		t.Fatal("OpenAI default changed")
+	}
+	for _, format := range []string{"", APIFormatOpenAI, APIFormatAnthropic, "unsupported"} {
+		cfg := DefaultConfig()
+		cfg.LLM.APIFormat = format
+		if err := cfg.Validate(ModeHTTP); (err != nil) != (format == "unsupported") {
+			t.Fatalf("format %q validation: %v", format, err)
+		}
+		cfg = DefaultConfig()
+		cfg.LLM.Fallbacks = []FallbackProvider{{Name: "fallback", APIFormat: format, BaseURL: "https://example.test/v1", Model: "mock", ContextWindow: 1000}}
+		if err := cfg.Validate(ModeHTTP); (err != nil) != (format == "unsupported") {
+			t.Fatalf("fallback format %q validation: %v", format, err)
+		}
+	}
+	t.Setenv("LLM_API_FORMAT", APIFormatAnthropic)
+	cfg, err := Load(writeConfig(t, "llm:\n  api_format: openai\n"))
+	if err != nil || cfg.LLM.APIFormat != APIFormatAnthropic {
+		t.Fatalf("format env override not applied: %#v %v", cfg.LLM, err)
+	}
+}
+
+func TestFallbackConfigPreservesBudgetsAndChoosesIndependentProtocol(t *testing.T) {
+	primary := DefaultConfig().LLM
+	primary.APIFormat = APIFormatAnthropic
+	primary.ReasoningEffort = "high"
+	fallback := primary.FallbackConfig(FallbackProvider{BaseURL: "https://example.test/v1", APIKey: "fallback-key", Model: "fallback-model", ContextWindow: 50000})
+	if fallback.APIFormat != "" || fallback.MaxOutputTokens != primary.MaxOutputTokens || fallback.MaxRunTokens != primary.MaxRunTokens || fallback.MaxRetries != primary.MaxRetries || fallback.ReasoningEffort != "high" || fallback.Model != "fallback-model" || fallback.APIKey != "fallback-key" {
+		t.Fatalf("fallback lost protocol or budgets: %#v", fallback)
+	}
+	fallback = primary.FallbackConfig(FallbackProvider{APIFormat: APIFormatAnthropic})
+	if fallback.APIFormat != APIFormatAnthropic {
+		t.Fatal("native fallback format lost")
+	}
+}

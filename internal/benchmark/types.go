@@ -1,6 +1,7 @@
 package benchmark
 
 import (
+	"agent-core/internal/config"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ type Manifest struct {
 	SchemaVersion  int    `json:"schema_version" yaml:"schema_version"`
 	Name           string `json:"name" yaml:"name"`
 	BaseURL        string `json:"base_url" yaml:"base_url"`
+	APIFormat      string `json:"api_format,omitempty" yaml:"api_format"`
 	APIKey         string `json:"api_key,omitempty" yaml:"api_key"`
 	Model          string `json:"model" yaml:"model"`
 	Fixture        string `json:"fixture,omitempty" yaml:"fixture"`
@@ -79,6 +81,9 @@ type Plan struct {
 }
 
 func (m Manifest) Validate() error {
+	if err := config.ValidateAPIFormat(m.APIFormat); err != nil {
+		return fmt.Errorf("api_format: %w", err)
+	}
 	if m.SchemaVersion != 1 || m.Name == "" || m.BaseURL == "" || m.Model == "" {
 		return fmt.Errorf("schema_version, name, base_url and model are required")
 	}

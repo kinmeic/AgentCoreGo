@@ -228,15 +228,8 @@ func main() {
 	if len(cfg.LLM.Fallbacks) > 0 {
 		providers := []llm.Provider{llmClient}
 		for _, fb := range cfg.LLM.Fallbacks {
-			fbCfg := config.LLMConfig{
-				BaseURL:           fb.BaseURL,
-				APIKey:            os.ExpandEnv(fb.APIKey),
-				Model:             fb.Model,
-				ContextWindow:     fb.ContextWindow,
-				Temperature:       fb.Temperature,
-				MaxRetries:        cfg.LLM.MaxRetries,
-				MaxToolIterations: cfg.LLM.MaxToolIterations,
-			}
+			fbCfg := cfg.LLM.FallbackConfig(fb)
+			fbCfg.APIKey = os.ExpandEnv(fb.APIKey)
 			client := llm.NewClient(fbCfg)
 			if recorder != nil {
 				client.SetRecorder(recorder)

@@ -95,6 +95,9 @@ func classifyError(statusCode int, body []byte) *APIError {
 	}
 
 	switch statusCode {
+	case 529:
+		apiErr.Kind = ErrorModelOverloaded
+		apiErr.Retryable = true
 	case http.StatusTooManyRequests:
 		apiErr.Kind = ErrorRateLimit
 		apiErr.Retryable = true

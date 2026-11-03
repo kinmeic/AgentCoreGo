@@ -30,20 +30,48 @@ CORS 仅允许指定的 scheme/host/port。服务不处理 `X-Forwarded-For`，�
 
 | 字段 | 默认值 | 说明 |
 |---|---:|---|
-| `base_url` | OpenAI `/v1` | OpenAI 兼容 Chat Completions 地址，不含 `/chat/completions` |
+| `api_format` | `openai` | `openai` 或 `anthropic`；主模型和各 fallback 分别选择 |
+| `base_url` | OpenAI `/v1` | OpenAI 为不含 `/chat/completions` 的 API base；Anthropic 支持 origin、`/v1` base 或完整 `/v1/messages` 地址 |
 | `api_key` | 空 | 建议使用 `${LLM_API_KEY}` |
 | `model` | `gpt-4o` | 模型名 |
 | `context_window` | `128000` | 当前 provider 的上下文预算 |
 | `max_tool_iterations` | `15` | 每 run 的 LLM/tool 循环上限 |
 | `max_retries` | `3` | 建连前网络、429、5xx 的额外重试次数 |
-| `temperature` | `0.7` | 0–2 |
+| `temperature` | `0.7` | OpenAI 格式为 0–2；Anthropic 不发送该参数，使用模型默认采样设置 |
 | `max_output_tokens` | `4096` | 单次 completion 的 `max_tokens` |
 | `max_run_tokens` | `100000` | 整 run 累计 usage 上限 |
 | `run_timeout_seconds` | `1800` | run 总时长上限 |
-| `reasoning_effort` | 空 | 可选透传 `reasoning_effort`，仅用于兼容 provider |
-| `fallbacks` | `[]` | 备用 OpenAI 兼容 provider |
+| `reasoning_effort` | 空 | OpenAI 透传 `reasoning_effort`；Anthropic 映射为 `output_config.effort`，仅用于支持该字段和所选等级的模型 |
+| `fallbacks` | `[]` | 备用 OpenAI/Anthropic provider |
 
-Fallback 项包含 `name/base_url/api_key/model/context_window/temperature`。建连成功后不会在流中途重放请求；fallback 保持为当前 provider，避免 context window 与正在使用的模型不一致。`Reset()` 可用于内部运维恢复，进程重启也会恢复主 provider。
+Fallback 项包含 `name/api_format/base_url/api_key/model/context_window/temperature`；未指定 `api_format` 的项仍使用 `openai`，不继承主模型协议。备用模型共享主配置的输出上限、重试和运行预算。建连成功后不会在流中途重放请求；fallback 保持为当前 provider，避免 context window 与正在使用的模型不一致。`Reset()` 可用于内部运维恢复，进程重启也会恢复主 provider。
+
+### Anthropic Messages
+
+```yaml
+llm:
+  api_format: anthropic
+  base_url: https://api.anthropic.com/v1
+  api_key: "${LLM_API_KEY}"
+  model: your-claude-model-id
+  max_output_tokens: 4096
+  fallbacks:
+    - name: openai-backup
+      api_format: openai
+      base_url: https://api.openai.com/v1
+      api_key: "${BACKUP_LLM_API_KEY}"
+      model: your-openai-model-id
+      context_window: 128000
+      temperature: 0.7
+```
+
+Anthropic 请求使用 `POST /v1/messages`、`x-api-key` 和 `anthropic-version: 2023-06-01`。系统消息合并到顶层 `system`；工具定义映射到 `input_schema`，并行 `tool_use` 的结果合并到后续 user 消息的 `tool_result` 块中，保留 `is_error`。配置地址也可指向提供相同格式的网关，例如 `https://gateway.example/anthropic/v1`；跨源重定向被拒绝，避免泄漏 API key。
+
+同步与 SSE 共用执行循环、重试、取消、日志脱敏和 model-io 采集。流式响应必须收到完整 `message_stop`，工具参数 JSON 也必须完整；中途 error/EOF 会使运行失败，不会作为完成结果执行工具。token 统计合并 input/output，并纳入 cache read/creation 输入用量；流式累计 output 只使用最终值，避免重复计数。
+
+当前适配支持文本和客户端工具，不提供图片、服务端工具或 signed thinking block 的历史回传；请求显式发送 `thinking: {type: disabled}`。`temperature` 不发送给 Anthropic，以兼容不支持采样参数的模型。`reasoning_effort` 可按所选模型能力设置，留空时不发送 effort；它不会启用 extended thinking。Embedding 仍使用单独配置的 OpenAI 兼容 Embeddings 接口。
+
+协议参考：[Messages API](https://platform.claude.com/docs/en/api/messages/create)、[SSE 流式事件](https://platform.claude.com/docs/en/build-with-claude/streaming)、[工具结果格式](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls)。
 
 ## embedding / store
 
@@ -107,6 +135,7 @@ workspace:
 | `AUTH_TOKEN` | `server.auth_token`，不需要 YAML `${}` 也可生效 |
 | `AGENT_CORE_HOST/PORT` | 监听地址/端口 |
 | `LLM_API_KEY/BASE_URL/MODEL` | 主模型配置 |
+| `LLM_API_FORMAT` | 主模型协议：`openai` 或 `anthropic` |
 | `EMBEDDING_API_KEY` | Embedding key |
 | `DB_PATH` | SQLite 路径 |
 | `VECTOR_BACKEND` | 向量后端 |

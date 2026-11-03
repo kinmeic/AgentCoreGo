@@ -9,6 +9,7 @@ server:
   log_format: "json"
 
 llm:
+  api_format: "openai" # openai (Chat Completions) or anthropic (Messages)
   base_url: "https://api.openai.com/v1"
   api_key: "${LLM_API_KEY}"
   model: "gpt-4o"

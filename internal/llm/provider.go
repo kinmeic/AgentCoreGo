@@ -7,7 +7,7 @@ import (
 
 // Provider defines the interface for LLM backend providers.
 // This abstraction allows switching between different LLM services
-// (OpenAI, Anthropic-via-proxy, local models, etc.) without changing
+// (OpenAI-compatible APIs, native Anthropic Messages, local models, etc.) without changing
 // the agent loop code.
 type Provider interface {
 	// Complete sends a non-streaming completion request.
@@ -29,6 +29,7 @@ type Provider interface {
 // ProviderConfig holds configuration for a single LLM provider.
 type ProviderConfig struct {
 	Name              string  `yaml:"name"`
+	APIFormat         string  `yaml:"api_format"`
 	BaseURL           string  `yaml:"base_url"`
 	APIKey            string  `yaml:"api_key"`
 	Model             string  `yaml:"model"`

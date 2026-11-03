@@ -475,7 +475,7 @@ func (o *Orchestrator) executePendingTools(ctx context.Context, run *model.Run, 
 		}
 		cp.Actions = append(cp.Actions, model.Action{RunID: run.ID, ToolCallID: call.ID,
 			Tool: call.Function.Name, Status: statusFromErr(execErr), Result: truncateStr(result, 500)})
-		cp.Messages = append(cp.Messages, model.Message{Role: model.RoleTool, Content: result, ToolCallID: call.ID})
+		cp.Messages = append(cp.Messages, model.Message{Role: model.RoleTool, Content: result, ToolCallID: call.ID, IsError: execErr != nil})
 		cp.Pending = cp.Pending[1:]
 		cp.InFlight = nil
 		toolLog := &model.ConversationLog{ConversationID: run.ConversationID, RunID: run.ID,
@@ -737,7 +737,7 @@ func (o *Orchestrator) buildMessages(ctx context.Context, convID string, userMsg
 }
 
 func conversationLogMessage(entry *model.ConversationLog) model.Message {
-	return model.Message{Role: entry.Role, Content: entry.Content, ToolCalls: entry.ToolCalls, ToolCallID: entry.ToolCallID}
+	return model.Message{Role: entry.Role, Content: entry.Content, ToolCalls: entry.ToolCalls, ToolCallID: entry.ToolCallID, IsError: entry.Role == model.RoleTool && entry.Status == "error"}
 }
 
 func (o *Orchestrator) emergencyCompress(ctx context.Context, messages []model.Message) []model.Message {

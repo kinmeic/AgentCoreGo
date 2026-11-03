@@ -73,12 +73,20 @@ go build -trimpath ./cmd/agent-core
 - 原生构建、默认配置和设置测试 AUTH_TOKEN 后的容器配置校验通过；Linux/Windows amd64 无 CGO 交叉构建通过，仅代表编译验证。
 - govulncheck v1.9.0 使用 Go 1.26.10，Darwin/Linux/Windows 三个目标均返回 `No vulnerabilities found`。旧 Go 1.26.4 的标准库告警通过升级工具链处理，x/sys 升至 v0.44.0。
 
+## Anthropic Messages 协议验收（2026-11-03）
+
+使用本地真实 HTTP mock 验证 `/v1/messages`，覆盖原生鉴权、system/tool schema 转换、同步响应、SSE 文本与并行工具参数、中文分片、累计/cache token 统计、未知事件、断流/坏 JSON/流内错误、取消、529 重试与跨源重定向阻断。
+
+Agent 集成测试覆盖同步/流式模式的完整两工具循环、`tool_result.is_error` 和历史恢复；另验证 OpenAI → Anthropic 混合 fallback、模型覆盖、benchmark、配置/env 校验及原始 wire 采集脱敏。现有 OpenAI 测试继续覆盖默认配置兼容性。
+
+全量标准/race 测试、vet、构建、配置校验与 Linux/Windows amd64 交叉编译通过，govulncheck 未发现已知漏洞。另使用编译后的服务二进制和本地 Messages mock，验证配置启动、HTTP JSON/SSE 对话、token 统计与关闭流程；未使用真实 Anthropic key 联调。当前适配范围为文本和客户端工具，extended thinking 被显式禁用，详见 [协议配置](configuration.md#anthropic-messages)。
+
 ## 未在本次环境验收
 
 - Windows 和 Linux 的实际运行、路径与进程树行为；Windows `taskkill /T` 仅实现并参与源码编译路径，未在 Windows 执行。
 - Docker 镜像构建和 Compose 启动：当前环境没有 Docker，配置和 YAML 已检查，但不能声称镜像已运行。
 - systemd、Caddy、logrotate 的真实服务器部署。
-- 真实 OpenAI/Embedding provider、真实第三方 MCP 服务、OAuth、公网 DNS/SSRF 场景。
+- 真实 OpenAI/Anthropic/Embedding provider、真实第三方 MCP 服务、OAuth、公网 DNS/SSRF 场景。
 - 模型质量、长任务效果、性能/容量 benchmark、SQLite 超大数据量和高并发生产压测。
 - 多租户隔离：本项目明确仍是单租户，不应据此推断已提供多用户授权。
 

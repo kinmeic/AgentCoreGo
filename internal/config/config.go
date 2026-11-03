@@ -46,6 +46,7 @@ type ServerConfig struct {
 	LogFormat          string   `yaml:"log_format"`
 }
 type LLMConfig struct {
+	APIFormat         string             `yaml:"api_format"`
 	BaseURL           string             `yaml:"base_url"`
 	APIKey            string             `yaml:"api_key"`
 	Model             string             `yaml:"model"`
@@ -61,6 +62,7 @@ type LLMConfig struct {
 }
 type FallbackProvider struct {
 	Name          string  `yaml:"name"`
+	APIFormat     string  `yaml:"api_format"`
 	BaseURL       string  `yaml:"base_url"`
 	APIKey        string  `yaml:"api_key"`
 	Model         string  `yaml:"model"`
@@ -140,7 +142,7 @@ func DefaultConfig() Config {
 	return Config{
 		Server: ServerConfig{Host: "127.0.0.1", Port: 8900, MaxRequestBytes: 1024 * 1024,
 			RateLimitPerMinute: 300, MaxConcurrentRuns: 10, LogFormat: "text"},
-		LLM: LLMConfig{BaseURL: "https://api.openai.com/v1", Model: "gpt-4o", ContextWindow: 128000,
+		LLM: LLMConfig{APIFormat: "openai", BaseURL: "https://api.openai.com/v1", Model: "gpt-4o", ContextWindow: 128000,
 			MaxToolIterations: 15, MaxRetries: 3, Temperature: 0.7, MaxOutputTokens: 4096,
 			MaxRunTokens: 100000, RunTimeoutSeconds: 1800},
 		Embedding:   EmbeddingConfig{BaseURL: "https://api.openai.com/v1", Model: "text-embedding-3-small", Dimensions: 1536},
@@ -250,6 +252,7 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	setString("AGENT_CORE_HOST", &cfg.Server.Host)
 	setString("LLM_API_KEY", &cfg.LLM.APIKey)
+	setString("LLM_API_FORMAT", &cfg.LLM.APIFormat)
 	setString("LLM_BASE_URL", &cfg.LLM.BaseURL)
 	setString("LLM_MODEL", &cfg.LLM.Model)
 	setString("EMBEDDING_API_KEY", &cfg.Embedding.APIKey)
@@ -333,6 +336,9 @@ func (c *Config) Validate(mode ValidateMode) error {
 	if c.LLM.BaseURL == "" || security.CheckHTTPURL(c.LLM.BaseURL) != nil {
 		return fmt.Errorf("llm.base_url is invalid")
 	}
+	if err := ValidateAPIFormat(c.LLM.APIFormat); err != nil {
+		return fmt.Errorf("llm.api_format: %w", err)
+	}
 	if c.LLM.Model == "" || c.LLM.ContextWindow <= 0 || c.LLM.MaxToolIterations <= 0 || c.LLM.MaxRetries < 0 {
 		return fmt.Errorf("invalid LLM model, context window, iteration or retry budget")
 	}
@@ -343,6 +349,9 @@ func (c *Config) Validate(mode ValidateMode) error {
 		return fmt.Errorf("llm.temperature must be between 0 and 2")
 	}
 	for _, fallback := range c.LLM.Fallbacks {
+		if err := ValidateAPIFormat(fallback.APIFormat); err != nil {
+			return fmt.Errorf("fallback %q api_format: %w", fallback.Name, err)
+		}
 		if fallback.BaseURL == "" || security.CheckHTTPURL(fallback.BaseURL) != nil || fallback.Model == "" || fallback.ContextWindow <= 0 {
 			return fmt.Errorf("invalid fallback provider %q", fallback.Name)
 		}

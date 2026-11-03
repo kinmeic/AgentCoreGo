@@ -27,6 +27,7 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	IsError    bool       `json:"is_error,omitempty"`
 }
 
 // ToolCall represents an LLM-generated tool call.

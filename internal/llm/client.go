@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// Client provides access to an OpenAI-compatible LLM API.
+// Client provides access to OpenAI Chat Completions and Anthropic Messages APIs.
 // It implements the Provider interface.
 type Client struct {
 	cfg        config.LLMConfig
@@ -30,13 +30,30 @@ var _ Provider = (*Client)(nil)
 
 // NewClient creates a new LLM client.
 func NewClient(cfg config.LLMConfig) *Client {
+	if cfg.APIFormat == "" {
+		cfg.APIFormat = config.APIFormatOpenAI
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 2 * time.Minute
-	return &Client{cfg: cfg, httpClient: &http.Client{Transport: transport}}
+	httpClient := &http.Client{Transport: transport}
+	if cfg.APIFormat == config.APIFormatAnthropic {
+		// net/http does not treat x-api-key as a sensitive redirect header.
+		// Reject cross-origin redirects before a native key can be forwarded.
+		httpClient.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many Anthropic redirects")
+			}
+			if len(via) > 0 && (request.URL.Scheme != via[0].URL.Scheme || request.URL.Host != via[0].URL.Host) {
+				return fmt.Errorf("cross-origin Anthropic redirect blocked")
+			}
+			return nil
+		}
+	}
+	return &Client{cfg: cfg, httpClient: httpClient}
 }
 
 // Name returns the provider identifier.
-func (c *Client) Name() string { return "openai" }
+func (c *Client) Name() string { return c.cfg.APIFormat }
 
 // ModelName returns the model being used.
 func (c *Client) ModelName() string { return c.cfg.Model }
@@ -138,6 +155,12 @@ func toAPIMessages(msgs []model.Message) []apiMessage {
 
 // Complete sends a non-streaming completion request.
 func (c *Client) Complete(ctx context.Context, messages []model.Message, tools []model.ToolDefinition) (*model.Message, *model.UsageInfo, error) {
+	if err := config.ValidateAPIFormat(c.cfg.APIFormat); err != nil {
+		return nil, nil, err
+	}
+	if c.cfg.APIFormat == config.APIFormatAnthropic {
+		return c.completeAnthropic(ctx, messages, tools)
+	}
 	reqBody := completionRequest{
 		Model:       c.cfg.Model,
 		Messages:    toAPIMessages(messages),
@@ -204,6 +227,12 @@ func (c *Client) Complete(ctx context.Context, messages []model.Message, tools [
 
 // CompleteStream sends a streaming completion request and returns a channel of stream events.
 func (c *Client) CompleteStream(ctx context.Context, messages []model.Message, tools []model.ToolDefinition) (<-chan StreamChunk, error) {
+	if err := config.ValidateAPIFormat(c.cfg.APIFormat); err != nil {
+		return nil, err
+	}
+	if c.cfg.APIFormat == config.APIFormatAnthropic {
+		return c.streamAnthropic(ctx, messages, tools)
+	}
 	reqBody := completionRequest{
 		Model:       c.cfg.Model,
 		Messages:    toAPIMessages(messages),
@@ -241,6 +270,11 @@ func (c *Client) CompleteStream(ctx context.Context, messages []model.Message, t
 
 // doRequest performs the HTTP request with retry logic and per-attempt capture.
 func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*http.Response, error) {
+	return c.doJSONRequest(ctx, strings.TrimRight(c.cfg.BaseURL, "/")+"/chat/completions", reqBody, reqBody.Stream)
+}
+
+// doJSONRequest shares transport, retries and wire capture across API formats.
+func (c *Client) doJSONRequest(ctx context.Context, endpoint string, reqBody any, stream bool) (*http.Response, error) {
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -258,13 +292,11 @@ func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*htt
 			case <-time.After(backoff):
 			}
 		}
-		url := strings.TrimRight(c.cfg.BaseURL, "/") + "/chat/completions"
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonData))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(jsonData))
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		req.Header = c.requestHeaders()
 		startedAt := time.Now()
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -300,7 +332,7 @@ func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*htt
 			}
 			return resp, nil
 		}
-		if reqBody.Stream {
+		if stream {
 			resp.Body = &recordingBody{reader: resp.Body, client: c, ctx: ctx, attempt: attempt + 1, startedAt: startedAt, request: jsonData, response: resp}
 			return resp, nil
 		}
