@@ -1,20 +1,28 @@
-# Agent Core
+# AgentCoreGo
 
-轻量、单租户的 AI Agent 服务端：Go 单二进制、HTTP JSON/SSE、OpenAI 兼容模型、持久化工具循环和 SQLite。它保留服务端定位，不包含完整 TUI、账号体系或桌面宿主协议。
+[![CI](https://github.com/kinmeic/AgentCoreGo/actions/workflows/ci.yml/badge.svg)](https://github.com/kinmeic/AgentCoreGo/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/Go-1.26.10-00ADD8?logo=go)](https://go.dev/dl/)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
+
+轻量级 Go AI Agent 服务端，支持 OpenAI 兼容模型、MCP、权限审批、子代理与工作流编排，基于 SQLite 持久化。
+
+面向自托管的编程助手和自动化任务，以 Go 单二进制提供 HTTP JSON/SSE API 与 CLI，可接入 IDE、自动化平台或自定义前端。服务采用单租户、单 workspace 模型，支持持久化工具执行、会话恢复和文件快照。
+
+[快速开始](#快速开始) · [HTTP API](docs/api.md) · [配置说明](docs/configuration.md) · [安全模型](docs/security.md) · [部署运维](docs/operations.md)
 
 ## 已实现能力
 
 - **可靠 Agent 运行**：同步/流式共用执行路径，独立 `run_id`，统一 `done | error | cancelled` 终态、迭代/token/时长/并发预算。
 - **会话与恢复**：完整 tool-call/tool-result 历史、版本化 SQLite 迁移、启动前备份、事件游标、原子工具 checkpoint、显式 resume。
-- **工具与权限**：JSON Schema 校验、能力声明、plan/build/edit/guarded/yolo、异步审批、会话级授权、静态 deny 优先。
+- **工具与权限**：离线 JSON Schema 校验、能力声明、plan/build/edit/guarded/yolo、异步审批、会话级授权、静态 deny 优先。
 - **Coding 工具**：原子写、revision 冲突检测、精确编辑、删除/移动、glob/grep、只读 Git、进程组取消。
 - **真实 MCP**：官方 Go SDK，stdio、legacy SSE、streamable HTTP，工具发现/调用、版本协商、断连清理和 `mcp-serve`。
 - **扩展与记忆**：Host Callback HMAC、长期记忆 CRUD/检索/consolidation/索引重建、可插拔向量开关。
 - **上下文管理**：Unicode/tool schema 预算、分级压缩、可持久化摘要、跨 chunk `<think>` 过滤、failover。
 - **工程能力**：薄 CLI、严格配置、CORS/限流/请求上限、结构化日志、readiness、指标、测试与容器部署。
 - **扩展生态**：项目配置层级与 Workspace Trust、Skills、内置/自定义 Slash Commands、RunSpec 固定扩展版本。
-- **任务编排**：Subagents、声明式 YAML/JSON DAG Workflow、fan-out、节点缓存与恢复。
-- **快照与 Web IDE**：完整文件树快照、冲突检查与补偿恢复，Workspace/Git/运行/变更直接管理 API。
+- **任务编排**：Subagents、Explore 只读约束、声明式 YAML/JSON DAG Workflow、fan-out、有界重试、节点缓存与恢复。
+- **快照与 IDE 集成**：完整文件树快照、冲突检查、内容完整性校验与补偿恢复，提供 Workspace/Git/运行/变更管理 API。
 - **model-io 与评测**：原始 provider wire、工具/文件轨迹、redacted/training 采集、独立隔离 benchmark 与 grader。
 
 > **安全边界**：文件工具有 workspace 路径与符号链接防护；终端命令拥有 AgentCore 进程的操作系统权限，**不是 OS 沙箱**。非 loopback 监听必须设置 `AUTH_TOKEN` 且禁用终端。当前会话、记忆和工具注册表是单租户共享状态，不是多租户隔离边界。
@@ -23,7 +31,7 @@
 
 ### 前置条件
 
-- Go **1.26.10**（与 `go.mod` 一致）
+- Go **1.26.10 或更高版本**（最低版本与 `go.mod` 一致）
 - CGO 与 C 编译器（SQLite 驱动需要）
 
 Ubuntu 可安装：
@@ -36,8 +44,8 @@ sudo apt install -y build-essential gcc ca-certificates
 ### 构建与配置
 
 ```bash
-git clone https://git.home.mrchen.net:8443/eugene/AgentCore.git
-cd AgentCore
+git clone https://github.com/kinmeic/AgentCoreGo.git
+cd AgentCoreGo
 go build -o agent-core ./cmd/agent-core
 
 export LLM_API_KEY='your-api-key'
@@ -50,6 +58,8 @@ export EMBEDDING_API_KEY="$LLM_API_KEY"
 ```
 
 编辑 [agent-core.yaml](agent-core.yaml)。`workspace.path` 是所有 workspace 工具的唯一目录来源；旧 `tools.work_dir` / `WORK_DIR` 仅作兼容映射，不应与 workspace 设置成不同路径。
+
+按使用的模型服务设置 `llm.base_url`、`llm.model` 和 `LLM_API_KEY`。工作区默认位于 `./workspace`，SQLite 数据库默认位于 `./data/agent.db`。API key 通过环境变量传入。
 
 ### 启动
 
@@ -64,6 +74,21 @@ curl http://127.0.0.1:8900/health
 curl -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:8900/ready
 ./agent-core doctor --config agent-core.yaml
 ```
+
+### Docker Compose
+
+安装 Docker 与 Compose 后，可使用仓库中的容器配置启动：
+
+```bash
+export AUTH_TOKEN='a-long-random-local-token'
+export LLM_API_KEY='your-api-key'
+# 使用向量记忆时，同时设置 EMBEDDING_API_KEY
+docker compose up -d --build
+
+curl http://127.0.0.1:8900/health
+```
+
+容器使用 [deploy/container.yaml](deploy/container.yaml)，默认禁用终端工具；宿主机端口仅绑定 `127.0.0.1:8900`，数据与工作区保存在独立 Docker volumes 中。使用其他模型服务时，修改容器配置中的模型地址和名称。生产部署与备份见 [运维文档](docs/operations.md)。
 
 ## CLI
 
@@ -166,4 +191,4 @@ docs/                   使用与运维文档
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+本项目采用 **BSD 3-Clause License**，详见 [LICENSE](LICENSE)。
