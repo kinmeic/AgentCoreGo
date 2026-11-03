@@ -1,0 +1,435 @@
+openapi: 3.1.0
+info:
+  title: AgentCore API
+  version: 0.2.0
+  description: Single-tenant AgentCore HTTP and SSE API. All endpoints except /health require bearer auth when configured.
+servers:
+  - url: http://127.0.0.1:8900
+security:
+  - bearerAuth: []
+tags:
+  - name: runs
+  - name: conversations
+  - name: memories
+  - name: tools
+  - name: diagnostics
+paths:
+  /health:
+    get:
+      tags: [diagnostics]
+      security: []
+      responses:
+        '200': {description: Liveness OK}
+  /ready:
+    get:
+      tags: [diagnostics]
+      responses:
+        '200': {description: Dependencies ready}
+        '503': {description: Not ready, $ref: '#/components/responses/Error'}
+  /v1/metrics:
+    get:
+      tags: [diagnostics]
+      responses:
+        '200': {description: Lightweight process and request metrics}
+  /v1/chat:
+    post:
+      tags: [runs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChatRequest'}
+      responses:
+        '200':
+          description: Completed synchronous run
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChatResponse'}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /v1/chat/stream:
+    post:
+      tags: [runs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChatRequest'}
+      responses:
+        '200':
+          description: SSE frames with id/event/data. Terminal event is done, error, or cancelled.
+          content:
+            text/event-stream:
+              schema: {$ref: '#/components/schemas/StreamEvent'}
+  /v1/chat/{id}/stop:
+    post:
+      tags: [runs]
+      parameters: [{$ref: '#/components/parameters/ConversationID'}]
+      responses:
+        '200': {description: Cancellation requested}
+  /v1/chat/{id}/clarify:
+    post:
+      tags: [runs]
+      parameters: [{$ref: '#/components/parameters/ConversationID'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [response]
+              properties: {response: {type: string}}
+      responses:
+        '200': {description: Clarification delivered or no pending request}
+  /v1/runs/{id}:
+    get:
+      tags: [runs]
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      responses:
+        '200':
+          description: Run record
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Run'}
+        '404': {$ref: '#/components/responses/Error'}
+  /v1/runs/{id}/stop:
+    post:
+      tags: [runs]
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      responses:
+        '200': {description: Cancellation requested, not a terminal-state claim}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {description: Run is not active}
+  /v1/runs/{id}/resume:
+    post:
+      tags: [runs]
+      parameters: [{$ref: '#/components/parameters/RunID'}]
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResumeRequest'}
+      responses:
+        '200':
+          description: JSON response or SSE when stream=true
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ChatResponse'}
+            text/event-stream:
+              schema: {$ref: '#/components/schemas/StreamEvent'}
+        '409': {description: An interrupted side-effecting tool needs retry or skip}
+  /v1/runs/{id}/events:
+    get:
+      tags: [runs]
+      parameters:
+        - {$ref: '#/components/parameters/RunID'}
+        - {name: after, in: query, schema: {type: integer, format: uint64, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, default: 1000, maximum: 1000}}
+      responses:
+        '200':
+          description: Durable events after sequence
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/RunEvent'}}
+  /v1/approvals:
+    get:
+      tags: [runs]
+      responses:
+        '200': {description: Pending approval requests}
+  /v1/approvals/{id}:
+    post:
+      tags: [runs]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApprovalResponse'}
+      responses:
+        '200': {description: Response delivered}
+        '404': {description: Request missing or already settled}
+  /v1/conversations:
+    get:
+      tags: [conversations]
+      parameters:
+        - {name: source, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 50}}
+        - {name: offset, in: query, schema: {type: integer, default: 0}}
+      responses:
+        '200':
+          description: Conversations
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Conversation'}}
+  /v1/conversations/{id}:
+    get:
+      tags: [conversations]
+      parameters: [{$ref: '#/components/parameters/ConversationID'}]
+      responses:
+        '200':
+          description: Conversation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Conversation'}
+        '404': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [conversations]
+      parameters: [{$ref: '#/components/parameters/ConversationID'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {title: {type: string}}
+      responses:
+        '200': {description: Updated conversation}
+    delete:
+      tags: [conversations]
+      parameters: [{$ref: '#/components/parameters/ConversationID'}]
+      responses:
+        '200': {description: Soft archived}
+  /v1/conversations/{id}/logs:
+    get:
+      tags: [conversations]
+      parameters:
+        - {$ref: '#/components/parameters/ConversationID'}
+        - {name: before, in: query, schema: {type: integer, format: int64}}
+        - {name: q, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 100, maximum: 500}}
+        - {name: format, in: query, schema: {type: string, enum: [jsonl]}}
+      responses:
+        '200':
+          description: Logs and optional X-Next-Cursor header
+          headers:
+            X-Next-Cursor: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/ConversationLog'}}
+            application/x-ndjson: {}
+  /v1/memories:
+    get:
+      tags: [memories]
+      responses:
+        '200': {description: Memories}
+    post:
+      tags: [memories]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MemoryInput'}
+      responses:
+        '201': {description: Created}
+  /v1/memories/consolidate:
+    post:
+      tags: [memories]
+      responses:
+        '200': {description: Number of memories merged}
+  /v1/memories/rebuild:
+    post:
+      tags: [memories]
+      responses:
+        '200': {description: Vector index rebuilt}
+  /v1/memories/{id}:
+    put:
+      tags: [memories]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '200': {description: Updated}
+    delete:
+      tags: [memories]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '200': {description: Deleted}
+  /v1/tools:
+    get:
+      tags: [tools]
+      responses:
+        '200': {description: Registered tools and capabilities}
+  /v1/tools/register:
+    post:
+      tags: [tools]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HostCallbackInput'}
+      responses:
+        '201': {description: Registered and persisted}
+        '409': {description: Name collision}
+  /v1/tools/{name}:
+    delete:
+      tags: [tools]
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Host callback removed; builtins cannot be removed}
+  /v1/mcp:
+    get:
+      tags: [tools]
+      responses:
+        '200': {description: Connected MCP servers}
+    post:
+      tags: [tools]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MCPInput'}
+      responses:
+        '201': {description: Connected and persisted}
+  /v1/mcp/{name}:
+    delete:
+      tags: [tools]
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Disconnected and configuration removed}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+  parameters:
+    ConversationID: {name: id, in: path, required: true, schema: {type: string}}
+    RunID: {name: id, in: path, required: true, schema: {type: string}}
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: {type: string}
+        code: {type: string}
+    ChatRequest:
+      type: object
+      required: [message]
+      properties:
+        conversation_id: {type: string}
+        message: {type: string}
+        source: {type: string}
+        metadata: {type: object, additionalProperties: {type: string}}
+    ChatResponse:
+      type: object
+      properties:
+        conversation_id: {type: string}
+        run_id: {type: string}
+        status: {type: string}
+        reply: {type: string}
+        intent: {type: string}
+        actions: {type: array, items: {type: object}}
+        usage: {$ref: '#/components/schemas/Usage'}
+        created_at: {type: string, format: date-time}
+    ResumeRequest:
+      type: object
+      properties:
+        strategy: {type: string, enum: ['', retry, skip]}
+        stream: {type: boolean, default: false}
+    ApprovalResponse:
+      type: object
+      required: [decision]
+      properties:
+        decision: {type: string, enum: [allow, deny]}
+        scope: {type: string, enum: [once, conversation], default: once}
+    Run:
+      type: object
+      properties:
+        id: {type: string}
+        conversation_id: {type: string}
+        status: {type: string, enum: [pending, running, waiting_clarification, waiting_approval, completed, failed, cancelled]}
+        input: {type: string}
+        iteration: {type: integer}
+        reply: {type: string}
+        error: {type: string}
+        usage: {$ref: '#/components/schemas/Usage'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        finished_at: {type: string, format: date-time}
+    StreamEvent:
+      type: object
+      properties:
+        schema_version: {type: integer}
+        event_id: {type: string}
+        sequence: {type: integer, format: uint64}
+        conversation_id: {type: string}
+        run_id: {type: string}
+        tool_call_id: {type: string}
+        request_id: {type: string}
+        timestamp: {type: string, format: date-time}
+        type: {type: string}
+        content: {type: string}
+        tool: {type: string}
+        preview: {type: string}
+        reply: {type: string}
+        error_code: {type: string}
+        message: {type: string}
+        usage: {$ref: '#/components/schemas/Usage'}
+    RunEvent:
+      type: object
+      properties:
+        event_id: {type: string}
+        run_id: {type: string}
+        conversation_id: {type: string}
+        sequence: {type: integer, format: uint64}
+        type: {type: string}
+        payload: {type: object}
+        created_at: {type: string, format: date-time}
+    Usage:
+      type: object
+      properties:
+        prompt_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        total_tokens: {type: integer}
+    Conversation:
+      type: object
+      properties:
+        id: {type: string}
+        title: {type: string}
+        source: {type: string}
+        metadata: {type: object, additionalProperties: {type: string}}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        archived_at: {type: string, format: date-time}
+    ConversationLog:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        conversation_id: {type: string}
+        run_id: {type: string}
+        role: {type: string}
+        content: {type: string}
+        tool_calls: {type: array, items: {type: object}}
+        tool_call_id: {type: string}
+        status: {type: string}
+        actions: {type: array, items: {type: object}}
+        created_at: {type: string, format: date-time}
+    MemoryInput:
+      type: object
+      required: [content]
+      properties:
+        content: {type: string}
+        category: {type: string}
+        source: {type: string}
+        importance: {type: number, minimum: 0, maximum: 1}
+    HostCallbackInput:
+      type: object
+      required: [name, callback_url, secret]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        schema: {type: object}
+        callback_url: {type: string, format: uri}
+        secret: {type: string, writeOnly: true}
+        allow_private: {type: boolean, default: false}
+    MCPInput:
+      type: object
+      required: [name, transport, config]
+      properties:
+        name: {type: string}
+        transport: {type: string, enum: [stdio, sse, streamable_http]}
+        config: {type: object, description: Transport-specific configuration including optional headers and allow_private}

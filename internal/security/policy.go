@@ -3,6 +3,7 @@ package security
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -20,19 +21,19 @@ const (
 type Resource string
 
 const (
-	ResourceFile    Resource = "file"
+	ResourceFile     Resource = "file"
 	ResourceTerminal Resource = "terminal"
-	ResourceWeb     Resource = "web"
-	ResourceMemory  Resource = "memory"
+	ResourceWeb      Resource = "web"
+	ResourceMemory   Resource = "memory"
 )
 
 // Action represents a request to perform an operation.
 type Action struct {
-	Resource    Resource
-	Operation   string // e.g., "read", "write", "execute", "fetch"
-	Target      string // e.g., file path, command, URL
-	ConvID      string
-	Metadata    map[string]string
+	Resource  Resource
+	Operation string // e.g., "read", "write", "execute", "fetch"
+	Target    string // e.g., file path, command, URL
+	ConvID    string
+	Metadata  map[string]string
 }
 
 // Decision is the result of a policy evaluation.
@@ -52,9 +53,9 @@ type Condition struct {
 
 // Policy defines a security rule.
 type Policy struct {
-	Name       string     `yaml:"name"`
-	Effect     Effect     `yaml:"effect"`
-	Resource   Resource   `yaml:"resource"`
+	Name       string      `yaml:"name"`
+	Effect     Effect      `yaml:"effect"`
+	Resource   Resource    `yaml:"resource"`
 	Conditions []Condition `yaml:"conditions"`
 }
 
@@ -110,8 +111,8 @@ func (e *PolicyEngine) Evaluate(action Action) Decision {
 	// If any audit policies matched, log but allow
 	if len(auditMatches) > 0 {
 		allMatches := append(auditMatches, allowMatches...)
-		log.Printf("[security] AUDIT: action %s/%s target=%q matched policies: %s",
-			action.Resource, action.Operation, action.Target,
+		log.Printf("[security] AUDIT: action %s/%s conversation=%q matched policies: %s",
+			action.Resource, action.Operation, action.ConvID,
 			strings.Join(allMatches, ", "))
 		return Decision{
 			Allowed: true,
@@ -123,8 +124,8 @@ func (e *PolicyEngine) Evaluate(action Action) Decision {
 
 	// If explicit allow policies matched, log them
 	if len(allowMatches) > 0 {
-		log.Printf("[security] ALLOWED: action %s/%s target=%q matched policies: %s",
-			action.Resource, action.Operation, action.Target,
+		log.Printf("[security] ALLOWED: action %s/%s conversation=%q matched policies: %s",
+			action.Resource, action.Operation, action.ConvID,
 			strings.Join(allowMatches, ", "))
 		return Decision{
 			Allowed: true,
@@ -134,7 +135,7 @@ func (e *PolicyEngine) Evaluate(action Action) Decision {
 	}
 
 	// Default allow with audit log for unmatched actions
-	log.Printf("[security] UNMATCHED: action %s/%s target=%q — default allow",
+	log.Printf("[security] UNMATCHED: action %s/%s conversation=%q — default allow",
 		action.Resource, action.Operation, action.Target)
 	return Decision{
 		Allowed: true,
@@ -205,6 +206,15 @@ func matchCondition(c Condition, action Action) bool {
 	case "in":
 		for _, v := range c.Values {
 			if strings.EqualFold(value, v) {
+				return true
+			}
+		}
+		return false
+
+	case "regex":
+		for _, pattern := range c.Values {
+			matched, err := regexp.MatchString(pattern, value)
+			if err == nil && matched {
 				return true
 			}
 		}

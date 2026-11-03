@@ -80,7 +80,7 @@ func isImportantUserMessage(content string) bool {
 	instructionPatterns := []string{
 		"don't", "do not", "stop", "always", "never",
 		"remember", "important", "note that", "make sure",
-		"must", "require", "constraint",
+		"must", "require", "constraint", "不要", "必须", "停止", "记住", "重要", "确保", "约束",
 	}
 	for _, p := range instructionPatterns {
 		if strings.Contains(lower, p) {
@@ -101,7 +101,7 @@ func isImportantAssistantMessage(m model.Message) bool {
 	}
 	// Messages containing errors or warnings
 	lower := strings.ToLower(m.Content)
-	errorPatterns := []string{"error", "failed", "warning", "issue", "problem"}
+	errorPatterns := []string{"error", "failed", "warning", "issue", "problem", "错误", "失败", "警告", "异常"}
 	for _, p := range errorPatterns {
 		if strings.Contains(lower, p) {
 			return true
@@ -115,7 +115,7 @@ func isImportantToolResult(content string) bool {
 	// Error results are always important
 	errorPatterns := []string{
 		"error:", "failed", "permission denied", "not found",
-		"timeout", "refused", "fatal",
+		"timeout", "refused", "fatal", "错误", "失败", "拒绝", "超时",
 	}
 	for _, p := range errorPatterns {
 		if strings.Contains(lower, p) {

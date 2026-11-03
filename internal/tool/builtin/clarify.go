@@ -26,6 +26,9 @@ func NewClarifyTool() *ClarifyTool {
 }
 
 func (t *ClarifyTool) Name() string { return "clarify" }
+func (t *ClarifyTool) Capabilities() tool.Capabilities {
+	return tool.Capabilities{ReadOnly: true, SideEffectScope: "interaction", RiskLevel: "low"}
+}
 func (t *ClarifyTool) Description() string {
 	return "Ask the user for clarification when you're uncertain about how to proceed. " +
 		"Use 'confirm' for yes/no questions, 'select' for choosing options, 'input' for open-ended questions."

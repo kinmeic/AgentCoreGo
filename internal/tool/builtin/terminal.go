@@ -30,6 +30,9 @@ func NewTerminalTool(workDir string, processRegistry *tool.ProcessRegistry) *Ter
 }
 
 func (t *TerminalTool) Name() string { return "run_terminal" }
+func (t *TerminalTool) Capabilities() tool.Capabilities {
+	return tool.Capabilities{Destructive: true, NeedsApproval: true, SideEffectScope: "system", RiskLevel: "high", Timeout: 610 * time.Second, MaxOutputBytes: 100_000}
+}
 func (t *TerminalTool) Description() string {
 	return "Execute a shell command in the terminal. Returns stdout and stderr output."
 }
@@ -88,24 +91,36 @@ func (t *TerminalTool) Execute(ctx context.Context, args map[string]any) (string
 	}
 
 	cmd := exec.CommandContext(ctx, shell, shellFlag, command)
+	tool.PrepareProcess(cmd)
+	cmd.WaitDelay = 5 * time.Second
 	if workDir != "" {
 		cmd.Dir = workDir
-	}
-
-	// Register process for lifecycle tracking
-	var procID string
-	if t.processRegistry != nil {
-		procID = t.processRegistry.Register(cmd, "run_terminal", "", timeout)
-		defer t.processRegistry.Unregister(procID)
 	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	// Register only after Start publishes cmd.Process, then wait concurrently with cancellation.
+	convID := ""
+	if info, ok := tool.ExecutionInfoFromContext(ctx); ok {
+		convID = info.ConversationID
+	}
+	var procID string
+	startErr := cmd.Start()
+	if startErr == nil && t.processRegistry != nil {
+		procID = t.processRegistry.Register(cmd, "run_terminal", convID, timeout)
+		defer t.processRegistry.Unregister(procID)
+	}
 
 	var result strings.Builder
+	var err error
+	if startErr != nil {
+		err = startErr
+	} else {
+		err = cmd.Wait()
+	}
+
 	if stdout.Len() > 0 {
 		result.WriteString("STDOUT:\n")
 		output := stdout.String()

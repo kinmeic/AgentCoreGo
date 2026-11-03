@@ -38,9 +38,10 @@ const (
 
 // RegisteredTool wraps a Provider with metadata.
 type RegisteredTool struct {
-	Provider Provider
-	Source   Source
-	Origin   string // e.g., MCP server name or "builtin"
+	Provider     Provider
+	Source       Source
+	Origin       string // e.g., MCP server name or "builtin"
+	Capabilities Capabilities
 }
 
 // MarshalArgs is a helper to serialize tool arguments to JSON string.

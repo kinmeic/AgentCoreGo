@@ -7,6 +7,7 @@ import (
 	"agent-core/internal/llm"
 	"agent-core/internal/mcp"
 	"agent-core/internal/memory"
+	"agent-core/internal/observability"
 	"agent-core/internal/prompt"
 	"agent-core/internal/sandbox"
 	"agent-core/internal/security"
@@ -16,6 +17,7 @@ import (
 	"agent-core/internal/tool"
 	"agent-core/internal/tool/builtin"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -32,6 +34,14 @@ func main() {
 		runMCPServer()
 		return
 	}
+	if len(os.Args) > 1 {
+		if handled, code := runCLI(os.Args[1:]); handled {
+			if code != 0 {
+				os.Exit(code)
+			}
+			return
+		}
+	}
 
 	configPath := flag.String("config", "agent-core.yaml", "Path to configuration file")
 	flag.Parse()
@@ -44,6 +54,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("[agent-core] Failed to load config: %v", err)
 	}
+
+	observability.Init(cfg.Server.LogFormat)
 
 	// Validate configuration (security checks for HTTP server mode)
 	if err := cfg.Validate(config.ModeHTTP); err != nil {
@@ -80,38 +92,74 @@ func main() {
 
 	// Initialize vector store
 	var vecStore vector.Store
-	vecStore, err = vector.NewSQLiteVec(dbStore.DB(), cfg.Embedding.Dimensions)
-	if err != nil {
-		log.Printf("[agent-core] Warning: vector store initialization failed: %v", err)
-		vecStore = nil
+	if cfg.Store.VectorBackend != "none" {
+		vecStore, err = vector.NewSQLiteVec(dbStore.DB(), cfg.Embedding.Dimensions)
+		if err != nil {
+			log.Printf("[agent-core] Warning: vector store initialization failed: %v", err)
+			vecStore = nil
+		}
 	}
 
 	// Initialize tool registry
 	toolRegistry := tool.NewRegistry()
+	if len(cfg.Tools.EnabledToolsets) > 0 {
+		enabled := make(map[string]bool, len(cfg.Tools.EnabledToolsets))
+		for _, name := range cfg.Tools.EnabledToolsets {
+			enabled[name] = true
+		}
+		if err := toolRegistry.ConfigureToolsets(tool.DefaultToolsets(), enabled); err != nil {
+			log.Fatalf("[agent-core] Invalid toolsets: %v", err)
+		}
+	}
 	processRegistry := tool.NewProcessRegistry()
 
 	// Initialize security policy engine
-	policyEngine := security.NewPolicyEngine(nil)
-	toolRegistry.SetPolicyCheck(func(toolName string, args map[string]any) error {
-		action := security.Action{
-			Resource:  resourceForTool(toolName),
-			Operation: operationForTool(toolName),
-			Target:    extractTarget(toolName, args),
+	policyEngine := security.NewPolicyEngine(cfg.Security.Policies)
+	permissions := tool.NewPermissionManager(cfg.Tools.ApprovalMode)
+	toolRegistry.SetPolicyCheck(func(ctx context.Context, toolName string, args map[string]any) error {
+		action := security.Action{Resource: resourceForTool(toolName), Operation: operationForTool(toolName), Target: extractTarget(toolName, args)}
+		if info, ok := tool.ExecutionInfoFromContext(ctx); ok {
+			action.ConvID = info.ConversationID
+			action.Metadata = map[string]string{"run_id": info.RunID, "tool_call_id": info.ToolCallID}
 		}
 		decision := policyEngine.Evaluate(action)
 		if !decision.Allowed {
 			return fmt.Errorf("%s", decision.Reason)
 		}
-		return nil
+		registered, _ := toolRegistry.Get(toolName)
+		return permissions.Authorize(ctx, registered, args)
 	})
 
 	// Register builtin tools
-	builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry, cfg.Tools.TerminalEnabled)
+	if err := builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry, cfg.Tools.TerminalEnabled); err != nil {
+		log.Fatalf("[agent-core] Failed to register builtin tools: %v", err)
+	}
 	if cfg.Tools.TerminalEnabled {
 		log.Printf("[agent-core] WARNING: terminal tool is enabled — it is NOT a true sandbox. " +
 			"For production, set tools.terminal_enabled: false and use container/OS isolation.")
 	}
 	log.Printf("[agent-core] Registered %d builtin tools", toolRegistry.Count())
+
+	callbacks, err := dbStore.HostCallbacks()
+	if err != nil {
+		log.Fatalf("[agent-core] Failed to load host callbacks: %v", err)
+	}
+	for _, callback := range callbacks {
+		if !callback.Enabled {
+			continue
+		}
+		var schema tool.ToolSchema
+		if err := json.Unmarshal(callback.Schema, &schema); err != nil {
+			log.Printf("[host] skipping %s with invalid schema: %v", callback.Name, err)
+			continue
+		}
+		provider := tool.NewHostCallbackWithOptions(tool.HostToolRegistration{Name: callback.Name,
+			Description: callback.Description, Schema: schema, CallbackURL: callback.CallbackURL,
+			Secret: callback.Secret, AllowPrivate: callback.AllowPrivate})
+		if err := toolRegistry.Register(provider, tool.SourceHostCallback, "host"); err != nil {
+			log.Printf("[host] failed to restore %s: %v", callback.Name, err)
+		}
+	}
 
 	// Initialize MCP manager
 	mcpManager := mcp.NewManager(toolRegistry)
@@ -122,10 +170,7 @@ func main() {
 		if !srv.Enabled {
 			continue
 		}
-		var srvCfg mcp.ServerConfig
-		srvCfg.Name = srv.Name
-		srvCfg.Transport = srv.Transport
-		srvCfg.Config = []byte(srv.Config)
+		srvCfg := mcp.RestoreConfig(srv.Name, srv.Transport, []byte(srv.Config))
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := mcpManager.Connect(ctx, srvCfg); err != nil {
@@ -135,7 +180,20 @@ func main() {
 	}
 
 	// Initialize memory service
-	memService := memory.NewService(dbStore, vecStore, embClient, cfg.Memory)
+	var embedder vector.Embedder
+	if embClient != nil {
+		embedder = embClient
+	}
+	memService := memory.NewService(dbStore, vecStore, embedder, cfg.Memory)
+	if err := memService.Rebuild(context.Background()); err != nil {
+		log.Printf("[memory] index rebuild degraded: %v", err)
+	}
+	if err := toolRegistry.Register(memory.NewSaveMemoryTool(memService), tool.SourceBuiltin, "builtin"); err != nil {
+		log.Fatalf("[agent-core] Register save_memory: %v", err)
+	}
+	if err := toolRegistry.Register(memory.NewSearchMemoryTool(memService), tool.SourceBuiltin, "builtin"); err != nil {
+		log.Fatalf("[agent-core] Register search_memory: %v", err)
+	}
 	memCount, _ := memService.Count()
 	log.Printf("[agent-core] Memory service initialized (%d memories)", memCount)
 
@@ -146,12 +204,12 @@ func main() {
 		providers := []llm.Provider{llmClient}
 		for _, fb := range cfg.LLM.Fallbacks {
 			fbCfg := config.LLMConfig{
-				BaseURL:          fb.BaseURL,
-				APIKey:           os.ExpandEnv(fb.APIKey),
-				Model:            fb.Model,
-				ContextWindow:    fb.ContextWindow,
-				Temperature:      fb.Temperature,
-				MaxRetries:       cfg.LLM.MaxRetries,
+				BaseURL:           fb.BaseURL,
+				APIKey:            os.ExpandEnv(fb.APIKey),
+				Model:             fb.Model,
+				ContextWindow:     fb.ContextWindow,
+				Temperature:       fb.Temperature,
+				MaxRetries:        cfg.LLM.MaxRetries,
 				MaxToolIterations: cfg.LLM.MaxToolIterations,
 			}
 			providers = append(providers, llm.NewClient(fbCfg))
@@ -164,10 +222,7 @@ func main() {
 	log.Printf("[agent-core] LLM provider initialized (%s)", llmProvider.ModelName())
 
 	// Initialize compressor and prompt builder
-	var summarizer *compressor.Summarizer
-	if cfg.LLM.APIKey != "" {
-		summarizer = compressor.NewSummarizer(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
-	}
+	summarizer := compressor.NewProviderSummarizer(llmProvider)
 	comp := compressor.NewCompressor(cfg.Compression, summarizer)
 	promptBuilder := prompt.NewBuilder()
 
@@ -175,6 +230,7 @@ func main() {
 	orchestrator := agent.NewOrchestrator(
 		llmProvider, toolRegistry, processRegistry, dbStore, memService, comp, promptBuilder, cfg,
 	)
+	orchestrator.SetPermissionManager(permissions)
 
 	// Initialize checkpoint store
 	checkpointStore := agent.NewSQLiteCheckpointStore(dbStore)
@@ -184,11 +240,13 @@ func main() {
 	srv := server.NewServer(cfg, orchestrator, toolRegistry, mcpManager, dbStore, memService)
 
 	httpServer := &http.Server{
-		Addr:         cfg.Addr(),
-		Handler:      srv.Handler(),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 10 * time.Minute, // Long timeout for SSE
-		IdleTimeout:  120 * time.Second,
+		Addr:              cfg.Addr(),
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      0, // SSE lifetime is governed by run budgets and cancellation.
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1024 * 1024,
 	}
 
 	// Start server
@@ -234,7 +292,7 @@ func printBanner(cfg config.Config) {
   ___             _         ____               
  / _ \           | |       / ____|              
 / /_\ \ __ _  ___| |_ ___ | |     ___  _ __ ___ 
-|  _  |/ _` + "`" + ` |/ _ \ __/ _ \| |    / _ \| '__/ _ \
+|  _  |/ _`+"`"+` |/ _ \ __/ _ \| |    / _ \| '__/ _ \
 | | | | (_| |  __/ || (_) | |___| (_) | | |  __/
 \_| |_/\__, |\___|\__\___/ \____/\___/|_|  \___|
         __/ |                                    
@@ -328,24 +386,37 @@ func runMCPServer() {
 
 	// Minimal initialization for MCP server mode (no DB, no LLM needed)
 	toolRegistry := tool.NewRegistry()
+	if len(cfg.Tools.EnabledToolsets) > 0 {
+		enabled := make(map[string]bool, len(cfg.Tools.EnabledToolsets))
+		for _, name := range cfg.Tools.EnabledToolsets {
+			enabled[name] = true
+		}
+		if err := toolRegistry.ConfigureToolsets(tool.DefaultToolsets(), enabled); err != nil {
+			log.Fatalf("[agent-core] Invalid toolsets: %v", err)
+		}
+	}
 	processRegistry := tool.NewProcessRegistry()
 
 	// Initialize security policy engine (same as HTTP mode)
-	policyEngine := security.NewPolicyEngine(nil)
-	toolRegistry.SetPolicyCheck(func(toolName string, args map[string]any) error {
-		action := security.Action{
-			Resource:  resourceForTool(toolName),
-			Operation: operationForTool(toolName),
-			Target:    extractTarget(toolName, args),
+	policyEngine := security.NewPolicyEngine(cfg.Security.Policies)
+	permissions := tool.NewPermissionManager(cfg.Tools.ApprovalMode)
+	toolRegistry.SetPolicyCheck(func(ctx context.Context, toolName string, args map[string]any) error {
+		action := security.Action{Resource: resourceForTool(toolName), Operation: operationForTool(toolName), Target: extractTarget(toolName, args)}
+		if info, ok := tool.ExecutionInfoFromContext(ctx); ok {
+			action.ConvID = info.ConversationID
+			action.Metadata = map[string]string{"run_id": info.RunID, "tool_call_id": info.ToolCallID}
 		}
 		decision := policyEngine.Evaluate(action)
 		if !decision.Allowed {
 			return fmt.Errorf("%s", decision.Reason)
 		}
-		return nil
+		registered, _ := toolRegistry.Get(toolName)
+		return permissions.Authorize(ctx, registered, args)
 	})
 
-	builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry, cfg.Tools.TerminalEnabled)
+	if err := builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry, cfg.Tools.TerminalEnabled); err != nil {
+		log.Fatalf("[agent-core] Failed to register builtin tools: %v", err)
+	}
 
 	// Restore MCP connections to include their tools
 	var mcpManager *mcp.Manager

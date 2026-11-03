@@ -76,6 +76,9 @@ func (t *WebFetchTool) getClient() *http.Client {
 }
 
 func (t *WebFetchTool) Name() string { return "web_fetch" }
+func (t *WebFetchTool) Capabilities() tool.Capabilities {
+	return tool.Capabilities{NeedsApproval: true, SideEffectScope: "network", RiskLevel: "high", Timeout: 35 * time.Second, MaxOutputBytes: 100_000}
+}
 func (t *WebFetchTool) Description() string {
 	return "Fetch the content of a web page by URL. Returns the page text content."
 }

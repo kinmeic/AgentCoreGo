@@ -1,0 +1,14 @@
+.git
+.zcode
+.env
+.env.*
+agent-core
+data
+logs
+workspace
+dist
+*.db
+*.db-shm
+*.db-wal
+*.test
+*.out

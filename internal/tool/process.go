@@ -35,7 +35,8 @@ func NewProcessRegistry() *ProcessRegistry {
 	}
 }
 
-// Register adds a process to the registry and returns its tracking ID.
+// Register adds a started process to the registry and returns its tracking ID.
+// Call Start before Register so cmd.Process is fully published.
 func (r *ProcessRegistry) Register(cmd *exec.Cmd, toolName, convID string, timeout time.Duration) string {
 	id := uuid.New().String()
 	r.mu.Lock()
@@ -135,7 +136,7 @@ func (r *ProcessRegistry) killProcess(p *TrackedProcess) {
 	if p.Cmd == nil || p.Cmd.Process == nil {
 		return
 	}
-	if err := p.Cmd.Process.Kill(); err != nil {
+	if err := killProcessTree(p.Cmd); err != nil {
 		log.Printf("[process] Failed to kill process %s (%s): %v", p.ID, p.ToolName, err)
 	} else {
 		log.Printf("[process] Killed process %s (%s, running %v)", p.ID, p.ToolName, time.Since(p.StartedAt))

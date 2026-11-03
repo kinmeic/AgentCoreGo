@@ -15,7 +15,10 @@ import (
 
 // SQLite provides the SQLite-backed data store for Agent Core.
 type SQLite struct {
-	db *sql.DB
+	db         *sql.DB
+	dbPath     string
+	ftsEnabled bool
+	lastBackup string
 }
 
 // NewSQLite creates a new SQLite store, initializing the database if needed.
@@ -36,7 +39,7 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	store := &SQLite{db: db}
+	store := &SQLite{db: db, dbPath: dbPath}
 	if err := store.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
@@ -55,87 +58,7 @@ func (s *SQLite) DB() *sql.DB {
 	return s.db
 }
 
-// migrate runs database migrations.
-func (s *SQLite) migrate() error {
-	migrations := []string{
-		`CREATE TABLE IF NOT EXISTS conversations (
-			id TEXT PRIMARY KEY,
-			title TEXT,
-			source TEXT,
-			metadata JSON,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			archived_at DATETIME NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS conversation_logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			conversation_id TEXT NOT NULL,
-			role TEXT NOT NULL,
-			content TEXT,
-			intent TEXT,
-			actions JSON,
-			prompt_tokens INTEGER DEFAULT 0,
-			completion_tokens INTEGER DEFAULT 0,
-			context_tokens INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-		)`,
-		`CREATE TABLE IF NOT EXISTS agent_memories (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			content TEXT NOT NULL,
-			category TEXT DEFAULT 'fact',
-			source TEXT DEFAULT 'auto_observed',
-			importance REAL DEFAULT 0.5,
-			enabled BOOLEAN DEFAULT 1,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS mcp_servers (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT UNIQUE NOT NULL,
-			transport TEXT NOT NULL,
-			config JSON NOT NULL,
-			enabled BOOLEAN DEFAULT 1,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS vector_store (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			source_type TEXT NOT NULL,
-			source_id TEXT NOT NULL,
-			embedding BLOB,
-			content TEXT,
-			content_summary TEXT,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_conversation_logs_conv_id ON conversation_logs(conversation_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_conversation_logs_created ON conversation_logs(created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_memories_category ON agent_memories(category)`,
-		`CREATE INDEX IF NOT EXISTS idx_agent_memories_enabled ON agent_memories(enabled)`,
-		`CREATE INDEX IF NOT EXISTS idx_vector_store_source ON vector_store(source_type, source_id)`,
-		`CREATE TABLE IF NOT EXISTS checkpoints (
-			conversation_id TEXT PRIMARY KEY,
-			data JSON NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-		)`,
-	}
-
-	for _, m := range migrations {
-		if _, err := s.db.Exec(m); err != nil {
-			return fmt.Errorf("execute migration: %w", err)
-		}
-	}
-
-	// Try to create FTS5 table (may not be available in all SQLite builds)
-	_, _ = s.db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS conversation_logs_fts USING fts5(
-		conversation_id,
-		content,
-		content='conversation_logs',
-		content_rowid='id'
-	)`)
-
-	return nil
-}
+// migrate applies versioned migrations in migrations.go.
 
 // --- Conversation Operations ---
 
@@ -233,33 +156,76 @@ func (s *SQLite) ArchiveConversation(id string) error {
 
 // --- Conversation Log Operations ---
 
-// AddLog adds a log entry to a conversation.
+// AddLog adds a log entry and advances the conversation timestamp atomically.
 func (s *SQLite) AddLog(log *model.ConversationLog) error {
-	actions, _ := json.Marshal(log.Actions)
-	result, err := s.db.Exec(
-		`INSERT INTO conversation_logs (conversation_id, role, content, intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		log.ConversationID, log.Role, log.Content, log.Intent, string(actions),
-		log.PromptTokens, log.CompletionTokens, log.ContextTokens, log.CreatedAt,
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := addLogTx(tx, log); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func addLogTx(tx *sql.Tx, log *model.ConversationLog) error {
+	actions, err := json.Marshal(log.Actions)
+	if err != nil {
+		return err
+	}
+	toolCalls, err := json.Marshal(log.ToolCalls)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(
+		`INSERT INTO conversation_logs (
+			conversation_id, run_id, role, content, tool_calls, tool_call_id, status,
+			intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		log.ConversationID, log.RunID, log.Role, log.Content, string(toolCalls), log.ToolCallID,
+		log.Status, log.Intent, string(actions), log.PromptTokens, log.CompletionTokens,
+		log.ContextTokens, log.CreatedAt,
 	)
 	if err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`UPDATE conversations SET updated_at = ? WHERE id = ?`, time.Now(), log.ConversationID); err != nil {
+		return err
+	}
+	log.ID, err = result.LastInsertId()
+	return err
+}
 
-	id, _ := result.LastInsertId()
-	log.ID = id
-
-	// Update conversation timestamp
-	s.db.Exec(`UPDATE conversations SET updated_at = ? WHERE id = ?`, time.Now(), log.ConversationID)
-
-	return nil
+// CommitToolResult atomically records a tool result and its resumable boundary.
+func (s *SQLite) CommitToolResult(log *model.ConversationLog, checkpoint []byte) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := addLogTx(tx, log); err != nil {
+		return err
+	}
+	now := time.Now()
+	if _, err := tx.Exec(`INSERT INTO checkpoints(conversation_id, data, created_at) VALUES (?, ?, ?)
+		ON CONFLICT(conversation_id) DO UPDATE SET data=excluded.data, created_at=excluded.created_at`,
+		log.ConversationID, checkpoint, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetLogs retrieves logs for a conversation.
 func (s *SQLite) GetLogs(conversationID string, limit int) ([]*model.ConversationLog, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conversation_id, role, content, intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at 
-		FROM conversation_logs WHERE conversation_id = ? ORDER BY id ASC LIMIT ?`,
+		`SELECT id, conversation_id, run_id, role, content, tool_calls, tool_call_id, status,
+			intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at
+		FROM (
+			SELECT id, conversation_id, run_id, role, content, tool_calls, tool_call_id, status,
+				intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at
+			FROM conversation_logs WHERE conversation_id = ? ORDER BY id DESC LIMIT ?
+		) ORDER BY id ASC`,
 		conversationID, limit,
 	)
 	if err != nil {
@@ -270,17 +236,26 @@ func (s *SQLite) GetLogs(conversationID string, limit int) ([]*model.Conversatio
 	var logs []*model.ConversationLog
 	for rows.Next() {
 		var cl model.ConversationLog
-		var actions sql.NullString
+		var runID, toolCalls, toolCallID, status, actions sql.NullString
 
-		if err := rows.Scan(&cl.ID, &cl.ConversationID, &cl.Role, &cl.Content, &cl.Intent,
-			&actions, &cl.PromptTokens, &cl.CompletionTokens, &cl.ContextTokens, &cl.CreatedAt); err != nil {
+		if err := rows.Scan(&cl.ID, &cl.ConversationID, &runID, &cl.Role, &cl.Content,
+			&toolCalls, &toolCallID, &status, &cl.Intent, &actions, &cl.PromptTokens,
+			&cl.CompletionTokens, &cl.ContextTokens, &cl.CreatedAt); err != nil {
 			return nil, err
 		}
-
-		if actions.Valid && actions.String != "" {
-			json.Unmarshal([]byte(actions.String), &cl.Actions)
+		cl.RunID = runID.String
+		cl.ToolCallID = toolCallID.String
+		cl.Status = status.String
+		if toolCalls.Valid && toolCalls.String != "" {
+			if err := json.Unmarshal([]byte(toolCalls.String), &cl.ToolCalls); err != nil {
+				return nil, fmt.Errorf("decode tool calls for log %d: %w", cl.ID, err)
+			}
 		}
-
+		if actions.Valid && actions.String != "" {
+			if err := json.Unmarshal([]byte(actions.String), &cl.Actions); err != nil {
+				return nil, fmt.Errorf("decode actions for log %d: %w", cl.ID, err)
+			}
+		}
 		logs = append(logs, &cl)
 	}
 

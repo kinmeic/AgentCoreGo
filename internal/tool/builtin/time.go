@@ -12,8 +12,11 @@ type TimeTool struct{}
 
 func NewTimeTool() *TimeTool { return &TimeTool{} }
 
-func (t *TimeTool) Name() string        { return "get_current_time" }
-func (t *TimeTool) Description() string  { return "Get the current date and time in various formats" }
+func (t *TimeTool) Name() string { return "get_current_time" }
+func (t *TimeTool) Capabilities() tool.Capabilities {
+	return tool.Capabilities{ReadOnly: true, ConcurrentSafe: true, SideEffectScope: "none", RiskLevel: "low", Timeout: 5 * time.Second}
+}
+func (t *TimeTool) Description() string { return "Get the current date and time in various formats" }
 func (t *TimeTool) Schema() tool.ToolSchema {
 	return tool.ToolSchema{
 		Type: "object",

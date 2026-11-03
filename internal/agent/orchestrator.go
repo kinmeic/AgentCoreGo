@@ -13,6 +13,8 @@ import (
 	"agent-core/internal/tool"
 	"agent-core/internal/tool/builtin"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -22,7 +24,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// Orchestrator is the core agent loop that manages conversations.
+var (
+	ErrConversationNotFound = errors.New("conversation not found")
+	ErrConversationArchived = errors.New("conversation is archived")
+	ErrRunNotFound          = errors.New("run not found")
+	ErrTooManyRuns          = errors.New("maximum concurrent runs reached")
+	ErrResumeToolRequired   = errors.New("an interrupted side-effecting tool requires resume strategy retry or skip")
+)
+
+type activeRun struct {
+	id     string
+	convID string
+	cancel context.CancelFunc
+}
+
+// Orchestrator is the durable agent loop shared by synchronous, SSE and resumed runs.
 type Orchestrator struct {
 	llmProvider     llm.Provider
 	toolRegistry    *tool.Registry
@@ -33,17 +49,23 @@ type Orchestrator struct {
 	promptBuilder   *prompt.Builder
 	cfg             config.Config
 	checkpointStore CheckpointStore
+	permissions     *tool.PermissionManager
+	runSlots        chan struct{}
 
-	// Per-conversation interrupt control
 	mu         sync.RWMutex
-	activeRuns map[string]context.CancelFunc
+	activeRuns map[string]*activeRun
 
-	// Per-conversation clarify response channels
-	clarifyMu sync.RWMutex
-	clarifyCh map[string]chan string
+	clarifyMu       sync.RWMutex
+	clarifyCh       map[string]chan string
+	clarifyRequests map[string]string
+
+	backgroundCtx     context.Context
+	backgroundCancel  context.CancelFunc
+	backgroundWG      sync.WaitGroup
+	backgroundMu      sync.Mutex
+	backgroundStopped bool
 }
 
-// NewOrchestrator creates a new agent orchestrator.
 func NewOrchestrator(
 	llmProvider llm.Provider,
 	registry *tool.Registry,
@@ -54,730 +76,805 @@ func NewOrchestrator(
 	promptBuilder *prompt.Builder,
 	cfg config.Config,
 ) *Orchestrator {
+	ctx, cancel := context.WithCancel(context.Background())
+	maxRuns := cfg.Server.MaxConcurrentRuns
+	if maxRuns <= 0 {
+		maxRuns = 1
+	}
 	return &Orchestrator{
-		llmProvider:     llmProvider,
-		toolRegistry:    registry,
-		processRegistry: processRegistry,
-		store:           store,
-		memService:      memService,
-		comp:            comp,
-		promptBuilder:   promptBuilder,
-		cfg:             cfg,
-		activeRuns:      make(map[string]context.CancelFunc),
-		clarifyCh:       make(map[string]chan string),
+		llmProvider: llmProvider, toolRegistry: registry, processRegistry: processRegistry,
+		store: store, memService: memService, comp: comp, promptBuilder: promptBuilder, cfg: cfg,
+		activeRuns: make(map[string]*activeRun), clarifyCh: make(map[string]chan string),
+		clarifyRequests: make(map[string]string), backgroundCtx: ctx, backgroundCancel: cancel,
+		runSlots: make(chan struct{}, maxRuns),
 	}
 }
 
-// ChatSync handles a synchronous chat request.
+func (o *Orchestrator) SetCheckpointStore(store CheckpointStore) { o.checkpointStore = store }
+func (o *Orchestrator) SetPermissionManager(manager *tool.PermissionManager) {
+	o.permissions = manager
+}
+
+// ChatSync handles a synchronous chat request. Interactive questions fail closed.
 func (o *Orchestrator) ChatSync(ctx context.Context, req model.ChatRequest) (*model.ChatResponse, error) {
-	convID := req.ConversationID
-	if convID == "" {
-		convID = uuid.New().String()
-		if err := o.ensureConversation(convID, req.Source, req.Metadata); err != nil {
-			return nil, err
-		}
-	}
-
-	// Register this run for interruption
-	runCtx, cancel := context.WithCancel(ctx)
-	o.registerRun(convID, cancel)
-	defer o.unregisterRun(convID)
-
-	// Build messages first (before logging user message, to avoid duplication
-	// since buildMessages loads history from DB and appends userMsg)
-	userMsg := model.Message{Role: model.RoleUser, Content: req.Message}
-	messages, err := o.buildMessages(runCtx, convID, userMsg)
+	response, err := o.startNewRun(ctx, req, false, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	// Now log user message (after buildMessages so it's not duplicated)
-	o.store.AddLog(&model.ConversationLog{
-		ConversationID: convID,
-		Role:           model.RoleUser,
-		Content:        req.Message,
-		CreatedAt:      time.Now(),
-	})
-
-	reply, intent, actions, usage, err := o.runLoop(runCtx, convID, messages)
-	if err != nil {
-		return nil, err
-	}
-
-	// Log assistant response
-	o.store.AddLog(&model.ConversationLog{
-		ConversationID:   convID,
-		Role:             model.RoleAssistant,
-		Content:          reply,
-		Intent:           intent,
-		Actions:          actions,
-		PromptTokens:     usage.PromptTokens,
-		CompletionTokens: usage.CompletionTokens,
-		ContextTokens:    usage.TotalTokens,
-		CreatedAt:        time.Now(),
-	})
-
-	// Auto-title conversation
-	o.autoTitle(convID, req.Message)
-
-	return &model.ChatResponse{
-		ConversationID: convID,
-		Reply:          reply,
-		Intent:         intent,
-		Actions:        actions,
-		Usage:          usage,
-		CreatedAt:      time.Now(),
-	}, nil
+	return response, nil
 }
 
-// ChatStream handles a streaming chat request, sending events to the channel.
+// ChatStream handles a streaming chat request.
 func (o *Orchestrator) ChatStream(ctx context.Context, req model.ChatRequest, events chan<- model.StreamEvent) {
 	defer close(events)
+	response, err := o.startNewRun(ctx, req, true, events)
+	if err != nil && response == nil {
+		events <- model.StreamEvent{Type: "error", ErrorCode: "run_start_failed", Message: err.Error(), Timestamp: time.Now()}
+	}
+}
 
+func (o *Orchestrator) startNewRun(ctx context.Context, req model.ChatRequest, interactive bool, out chan<- model.StreamEvent) (*model.ChatResponse, error) {
+	select {
+	case o.runSlots <- struct{}{}:
+		defer func() { <-o.runSlots }()
+	default:
+		return nil, ErrTooManyRuns
+	}
+	if o.cfg.LLM.RunTimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(o.cfg.LLM.RunTimeoutSeconds)*time.Second)
+		defer cancel()
+	}
 	convID := req.ConversationID
 	if convID == "" {
-		convID = uuid.New().String()
-		if err := o.ensureConversation(convID, req.Source, req.Metadata); err != nil {
-			events <- model.StreamEvent{Type: "error", Message: err.Error()}
-			return
+		convID = uuid.NewString()
+	}
+	if err := o.ensureConversation(convID, req.ConversationID == "", req.Source, req.Metadata); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	run := &model.Run{ID: uuid.NewString(), ConversationID: convID, Status: model.RunStatusRunning,
+		Input: req.Message, Source: req.Source, Metadata: req.Metadata, CreatedAt: now, UpdatedAt: now,
+		Usage: &model.UsageInfo{}}
+	if err := o.store.SaveRun(run); err != nil {
+		return nil, fmt.Errorf("create run: %w", err)
+	}
+	runCtx, err := o.registerRun(run.ID, convID, ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer o.unregisterRun(run.ID)
+	emitter := &runEmitter{ctx: runCtx, store: o.store, run: run, out: out}
+	if err := emitter.emit(model.StreamEvent{Type: "conv_id"}); err != nil {
+		return o.failRun(run, emitter, nil, err, interactive)
+	}
+	messages, err := o.buildMessages(runCtx, convID, model.Message{Role: model.RoleUser, Content: req.Message})
+	if err != nil {
+		return o.failRun(run, emitter, nil, err, interactive)
+	}
+	if err := o.store.AddLog(&model.ConversationLog{ConversationID: convID, RunID: run.ID,
+		Role: model.RoleUser, Content: req.Message, Status: "completed", CreatedAt: time.Now()}); err != nil {
+		return o.failRun(run, emitter, nil, fmt.Errorf("save user message: %w", err), interactive)
+	}
+	cp := &Checkpoint{ConversationID: convID, RunID: run.ID, Messages: messages}
+	if err := o.writeCheckpoint(run, cp); err != nil {
+		return o.failRun(run, emitter, cp, err, interactive)
+	}
+	if err := o.executeRun(runCtx, run, cp, interactive, emitter, ""); err != nil {
+		return o.failRun(run, emitter, cp, err, interactive)
+	}
+	return o.completeRun(run, emitter, cp, interactive)
+}
+
+// ResumeRun resumes a durable checkpoint. Strategy may be "", "retry" or "skip".
+func (o *Orchestrator) ResumeRun(ctx context.Context, runID, strategy string, interactive bool, out chan<- model.StreamEvent) (*model.ChatResponse, error) {
+	select {
+	case o.runSlots <- struct{}{}:
+		defer func() { <-o.runSlots }()
+	default:
+		return nil, ErrTooManyRuns
+	}
+	if o.cfg.LLM.RunTimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(o.cfg.LLM.RunTimeoutSeconds)*time.Second)
+		defer cancel()
+	}
+	if strategy != "" && strategy != "retry" && strategy != "skip" {
+		return nil, fmt.Errorf("invalid resume strategy %q", strategy)
+	}
+	run, err := o.store.GetRun(runID)
+	if err != nil || run == nil {
+		if err == nil {
+			err = ErrRunNotFound
+		}
+		return nil, err
+	}
+	if run.Status == model.RunStatusCompleted || run.Status == model.RunStatusCancelled {
+		return nil, fmt.Errorf("run %s is already %s", runID, run.Status)
+	}
+	if o.checkpointStore == nil {
+		return nil, errors.New("checkpoint storage is unavailable")
+	}
+	cp, err := o.checkpointStore.LoadCheckpoint(run.ConversationID)
+	if err != nil || cp == nil {
+		if err == nil {
+			err = errors.New("checkpoint not found")
+		}
+		return nil, err
+	}
+	if cp.RunID != "" && cp.RunID != run.ID {
+		return nil, errors.New("checkpoint belongs to a different run")
+	}
+	cp.RunID = run.ID
+	runCtx, err := o.registerRun(run.ID, run.ConversationID, ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer o.unregisterRun(run.ID)
+	sequence, err := o.store.LastRunEventSequence(run.ID)
+	if err != nil {
+		return nil, err
+	}
+	run.Status = model.RunStatusRunning
+	if run.Usage == nil {
+		run.Usage = &model.UsageInfo{}
+	}
+	run.Error = ""
+	run.FinishedAt = nil
+	if err := o.store.SaveRun(run); err != nil {
+		return nil, err
+	}
+	emitter := &runEmitter{ctx: runCtx, store: o.store, run: run, out: out, sequence: sequence}
+	if err := emitter.emit(model.StreamEvent{Type: "resumed"}); err != nil {
+		return o.failRun(run, emitter, cp, err, interactive)
+	}
+	if err := o.executeRun(runCtx, run, cp, interactive, emitter, strategy); err != nil {
+		return o.failRun(run, emitter, cp, err, interactive)
+	}
+	return o.completeRun(run, emitter, cp, interactive)
+}
+
+func (o *Orchestrator) executeRun(ctx context.Context, run *model.Run, cp *Checkpoint, interactive bool, emitter *runEmitter, resumeStrategy string) error {
+	if cp.Discovery == nil {
+		cp.Discovery = tool.NewDiscoveryState(cp.Discovered, o.cfg.Tools.ProgressiveTools, o.cfg.Tools.ToolSearchThreshold)
+	}
+	if cp.InFlight != nil {
+		if err := o.resolveInterruptedTool(run, cp, resumeStrategy); err != nil {
+			return err
 		}
 	}
-
-	// Send conversation ID
-	events <- model.StreamEvent{Type: "conv_id", ConversationID: convID}
-
-	// Register this run for interruption
-	runCtx, cancel := context.WithCancel(ctx)
-	o.registerRun(convID, cancel)
-	defer o.unregisterRun(convID)
-
-	// Build messages first (before logging user message, to avoid duplication)
-	userMsg := model.Message{Role: model.RoleUser, Content: req.Message}
-	messages, err := o.buildMessages(runCtx, convID, userMsg)
-	if err != nil {
-		events <- model.StreamEvent{Type: "error", Message: err.Error()}
-		return
-	}
-
-	// Now log user message (after buildMessages so it's not duplicated)
-	o.store.AddLog(&model.ConversationLog{
-		ConversationID: convID,
-		Role:           model.RoleUser,
-		Content:        req.Message,
-		CreatedAt:      time.Now(),
-	})
-
-	// Run the streaming agent loop
-	reply, intent, actions, usage, err := o.runStreamLoop(runCtx, convID, messages, events)
-	if err != nil {
-		events <- model.StreamEvent{Type: "error", Message: err.Error()}
-		return
-	}
-
-	// Log assistant response
-	o.store.AddLog(&model.ConversationLog{
-		ConversationID:   convID,
-		Role:             model.RoleAssistant,
-		Content:          reply,
-		Intent:           intent,
-		Actions:          actions,
-		PromptTokens:     usage.PromptTokens,
-		CompletionTokens: usage.CompletionTokens,
-		ContextTokens:    usage.TotalTokens,
-		CreatedAt:        time.Now(),
-	})
-
-	// Send done event
-	events <- model.StreamEvent{
-		Type:    "done",
-		Intent:  intent,
-		Actions: actions,
-		Reply:   reply,
-		Usage:   usage,
-	}
-
-	// Auto-title conversation
-	o.autoTitle(convID, req.Message)
-}
-
-// SetCheckpointStore sets the checkpoint persistence store.
-func (o *Orchestrator) SetCheckpointStore(store CheckpointStore) {
-	o.checkpointStore = store
-}
-
-// Stop interrupts a running conversation.
-func (o *Orchestrator) Stop(conversationID string) bool {	o.mu.RLock()
-	cancel, ok := o.activeRuns[conversationID]
-	o.mu.RUnlock()
-
-	if ok {
-		cancel()
-		// Kill all subprocesses for this conversation
-		if o.processRegistry != nil {
-			killed := o.processRegistry.KillByConversation(conversationID)
-			if killed > 0 {
-				log.Printf("[agent] Killed %d subprocess(es) for conversation %s", killed, conversationID)
+	budget := NewIterationBudget(o.cfg.LLM.MaxToolIterations, o.cfg.LLM.MaxRunTokens)
+	budget.currentIteration = cp.Iteration
+	budget.totalTokens = cp.TotalTokens
+	for {
+		if len(cp.Pending) > 0 {
+			if err := o.executePendingTools(ctx, run, cp, interactive, emitter); err != nil {
+				return err
+			}
+			continue
+		}
+		if budget.Exhausted() {
+			return errors.New(budget.ExceededMessage())
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		cp.Iteration = budget.CurrentIteration()
+		if err := emitter.emit(model.StreamEvent{Type: "thinking", Iteration: budget.CurrentIteration() + 1}); err != nil {
+			return err
+		}
+		response, usage, err := o.complete(ctx, cp, interactive, emitter)
+		if err != nil {
+			if classifyAndLog(err) {
+				budget.RecordIteration(0)
+				compressed := o.emergencyCompress(ctx, cp.Messages)
+				if len(compressed) >= len(cp.Messages) {
+					return errors.New("context length exceeded and compression failed to reduce messages")
+				}
+				cp.Messages = compressed
+				continue
+			}
+			return fmt.Errorf("LLM call failed: %w", err)
+		}
+		addUsage(run.Usage, usage)
+		budget.RecordIteration(tokenTotal(usage))
+		cp.Iteration = budget.CurrentIteration()
+		cp.PromptTokens, cp.ComplTokens, cp.TotalTokens = run.Usage.PromptTokens, run.Usage.CompletionTokens, run.Usage.TotalTokens
+		if len(response.ToolCalls) == 0 {
+			run.Reply = response.Content
+			return nil
+		}
+		for _, call := range response.ToolCalls {
+			if call.ID == "" || call.Function.Name == "" {
+				return errors.New("model returned an incomplete tool call")
 			}
 		}
-		return true
+		cp.Messages = append(cp.Messages, *response)
+		if err := o.store.AddLog(&model.ConversationLog{ConversationID: run.ConversationID, RunID: run.ID,
+			Role: model.RoleAssistant, Content: response.Content, ToolCalls: response.ToolCalls,
+			Status: "tool_calls", CreatedAt: time.Now()}); err != nil {
+			return fmt.Errorf("save assistant tool calls: %w", err)
+		}
+		cp.Pending = append([]model.ToolCall(nil), response.ToolCalls...)
+		names := make([]string, len(response.ToolCalls))
+		for i, call := range response.ToolCalls {
+			names[i] = call.Function.Name
+		}
+		if err := emitter.emit(model.StreamEvent{Type: "tool_call", Tools: names}); err != nil {
+			return err
+		}
+		if err := o.writeCheckpoint(run, cp); err != nil {
+			return err
+		}
 	}
-	return false
 }
 
-// StopAll interrupts all running conversations. Called during graceful shutdown.
+func (o *Orchestrator) complete(ctx context.Context, cp *Checkpoint, stream bool, emitter *runEmitter) (*model.Message, *model.UsageInfo, error) {
+	definitions := o.toolRegistry.ToolDefinitionsForRun(cp.Discovery)
+	if !stream {
+		response, usage, err := o.llmProvider.Complete(ctx, cp.Messages, definitions)
+		if response != nil {
+			response.Content = FilterThinkTags(response.Content)
+		}
+		return response, usage, err
+	}
+	chunks, err := o.llmProvider.CompleteStream(ctx, cp.Messages, definitions)
+	if err != nil {
+		return nil, nil, err
+	}
+	var content strings.Builder
+	collector := newToolCallCollector()
+	usage := &model.UsageInfo{}
+	thinkFilter := &StreamingThinkFilter{}
+	for chunk := range chunks {
+		if chunk.Err != nil {
+			return nil, nil, chunk.Err
+		}
+		if chunk.Content != "" {
+			visible := thinkFilter.Process(chunk.Content)
+			if visible != "" {
+				content.WriteString(visible)
+				if err := emitter.emit(model.StreamEvent{Type: "chunk", Content: visible}); err != nil {
+					return nil, nil, err
+				}
+			}
+		}
+		collector.add(chunk.ToolCalls)
+		if chunk.Usage != nil {
+			usage = &model.UsageInfo{PromptTokens: chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens, TotalTokens: chunk.Usage.TotalTokens}
+		}
+	}
+	if tail := thinkFilter.Flush(); tail != "" {
+		content.WriteString(tail)
+		if err := emitter.emit(model.StreamEvent{Type: "chunk", Content: tail}); err != nil {
+			return nil, nil, err
+		}
+	}
+	calls := collector.build()
+	if len(calls) != len(collector.calls) {
+		return nil, nil, errors.New("stream ended with incomplete tool calls")
+	}
+	return &model.Message{Role: model.RoleAssistant, Content: content.String(), ToolCalls: calls}, usage, nil
+}
+
+func (o *Orchestrator) executePendingTools(ctx context.Context, run *model.Run, cp *Checkpoint, interactive bool, emitter *runEmitter) error {
+	for len(cp.Pending) > 0 {
+		call := cp.Pending[0]
+		cp.InFlight = &call
+		if err := o.writeCheckpoint(run, cp); err != nil {
+			return err
+		}
+		args, parseErr := tool.UnmarshalArgs(call.Function.Arguments)
+		preview := truncateStr(call.Function.Arguments, 200)
+		if parseErr == nil {
+			preview = tool.PreviewArgs(args)
+		}
+		if err := emitter.emit(model.StreamEvent{Type: "tool.started", ToolName: call.Function.Name,
+			ToolCallID: call.ID, Preview: preview}); err != nil {
+			return err
+		}
+		var result string
+		execErr := parseErr
+		if execErr == nil {
+			var statusErr error
+			toolCtx := tool.WithExecutionInfo(ctx, tool.ExecutionInfo{
+				ConversationID: run.ConversationID, RunID: run.ID, ToolCallID: call.ID, Interactive: interactive,
+				Discovery: cp.Discovery, Emit: emitter.emit, OnStatus: func(status model.RunStatus) {
+					run.Status = status
+					if err := o.store.SaveRun(run); err != nil && statusErr == nil {
+						statusErr = fmt.Errorf("persist run status: %w", err)
+					}
+				},
+			})
+			result, execErr = o.toolRegistry.Dispatch(toolCtx, call.Function.Name, args)
+			if statusErr != nil && execErr == nil {
+				execErr = statusErr
+			}
+		}
+		if execErr == nil && builtin.IsClarifyRequest(result) {
+			result, execErr = o.handleClarify(ctx, run, call.ID, result, interactive, emitter)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if execErr != nil {
+			result = "Error: " + execErr.Error()
+		}
+		cp.Actions = append(cp.Actions, model.Action{RunID: run.ID, ToolCallID: call.ID,
+			Tool: call.Function.Name, Status: statusFromErr(execErr), Result: truncateStr(result, 500)})
+		cp.Messages = append(cp.Messages, model.Message{Role: model.RoleTool, Content: result, ToolCallID: call.ID})
+		cp.Pending = cp.Pending[1:]
+		cp.InFlight = nil
+		toolLog := &model.ConversationLog{ConversationID: run.ConversationID, RunID: run.ID,
+			Role: model.RoleTool, Content: result, ToolCallID: call.ID,
+			Status: statusFromErr(execErr), CreatedAt: time.Now()}
+		if err := o.commitToolBoundary(run, cp, toolLog); err != nil {
+			return err
+		}
+		if err := emitter.emit(model.StreamEvent{Type: "progress", ToolCallID: call.ID,
+			ToolName: call.Function.Name, Summary: truncateStr(result, 500)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (o *Orchestrator) resolveInterruptedTool(run *model.Run, cp *Checkpoint, strategy string) error {
+	call := *cp.InFlight
+	registered, ok := o.toolRegistry.Get(call.Function.Name)
+	readOnly := ok && registered.Capabilities.ReadOnly
+	if readOnly || strategy == "retry" {
+		found := false
+		for _, pending := range cp.Pending {
+			if pending.ID == call.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cp.Pending = append([]model.ToolCall{call}, cp.Pending...)
+		}
+		return nil
+	}
+	if strategy != "skip" {
+		return fmt.Errorf("%w: %s (%s)", ErrResumeToolRequired, call.Function.Name, call.ID)
+	}
+	result := "Error: tool was interrupted and explicitly skipped during resume"
+	cp.Actions = append(cp.Actions, model.Action{RunID: run.ID, ToolCallID: call.ID,
+		Tool: call.Function.Name, Status: "cancelled", Result: result})
+	cp.Messages = append(cp.Messages, model.Message{Role: model.RoleTool, ToolCallID: call.ID, Content: result})
+	if len(cp.Pending) > 0 && cp.Pending[0].ID == call.ID {
+		cp.Pending = cp.Pending[1:]
+	}
+	cp.InFlight = nil
+	return o.commitToolBoundary(run, cp, &model.ConversationLog{ConversationID: run.ConversationID,
+		RunID: run.ID, Role: model.RoleTool, ToolCallID: call.ID, Content: result,
+		Status: "cancelled", CreatedAt: time.Now()})
+}
+
+func (o *Orchestrator) handleClarify(ctx context.Context, run *model.Run, callID, result string, interactive bool, emitter *runEmitter) (string, error) {
+	request, err := builtin.ParseClarifyRequest(result)
+	if err != nil || request == nil {
+		return result, nil
+	}
+	if !interactive {
+		return "", errors.New("clarification requires the streaming API")
+	}
+	requestID := uuid.NewString()
+	if err := emitter.emit(model.StreamEvent{Type: "clarify", RequestID: requestID, ToolCallID: callID,
+		ClarifyKind: string(request.Kind), ClarifyMessage: request.Message, ClarifyOptions: request.Options}); err != nil {
+		return "", err
+	}
+	run.Status = model.RunStatusWaitingClarify
+	if err := o.store.SaveRun(run); err != nil {
+		return "", err
+	}
+	response, ok := o.waitForClarify(ctx, run.ConversationID, requestID, 5*time.Minute)
+	run.Status = model.RunStatusRunning
+	if err := o.store.SaveRun(run); err != nil {
+		return "", err
+	}
+	if !ok {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", errors.New("clarification request timed out")
+	}
+	return "User responded: " + response, nil
+}
+
+func (o *Orchestrator) completeRun(run *model.Run, emitter *runEmitter, cp *Checkpoint, interactive bool) (*model.ChatResponse, error) {
+	intent := classifyIntent(run.Reply)
+	if err := o.store.AddLog(&model.ConversationLog{ConversationID: run.ConversationID, RunID: run.ID,
+		Role: model.RoleAssistant, Content: run.Reply, Intent: intent, Actions: cp.Actions,
+		Status: "completed", PromptTokens: run.Usage.PromptTokens, CompletionTokens: run.Usage.CompletionTokens,
+		ContextTokens: run.Usage.TotalTokens, CreatedAt: time.Now()}); err != nil {
+		return o.failRun(run, emitter, cp, fmt.Errorf("save assistant response: %w", err), interactive)
+	}
+	now := time.Now()
+	run.Status, run.FinishedAt, run.Error = model.RunStatusCompleted, &now, ""
+	if err := o.store.SaveRun(run); err != nil {
+		return o.failRun(run, emitter, cp, err, interactive)
+	}
+	if o.checkpointStore != nil {
+		if err := o.checkpointStore.DeleteCheckpoint(run.ConversationID); err != nil {
+			log.Printf("[agent] completed run %s but could not delete checkpoint: %v", run.ID, err)
+		}
+	}
+	if err := emitter.emit(model.StreamEvent{Type: "done", Intent: intent, Actions: cp.Actions,
+		Reply: run.Reply, Usage: run.Usage}); err != nil {
+		return nil, err
+	}
+	o.autoTitle(run.ConversationID, run.Input)
+	return &model.ChatResponse{ConversationID: run.ConversationID, RunID: run.ID,
+		Status: model.RunStatusCompleted, Reply: run.Reply, Intent: intent, Actions: cp.Actions,
+		Usage: run.Usage, CreatedAt: now}, nil
+}
+
+func (o *Orchestrator) failRun(run *model.Run, emitter *runEmitter, cp *Checkpoint, runErr error, interactive bool) (*model.ChatResponse, error) {
+	status := model.RunStatusFailed
+	eventType, code := "error", "run_failed"
+	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+		status, eventType, code = model.RunStatusCancelled, "cancelled", "cancelled"
+	}
+	now := time.Now()
+	run.Status, run.Error, run.FinishedAt = status, runErr.Error(), &now
+	if cp != nil {
+		run.Reply = ""
+	}
+	if err := o.store.SaveRun(run); err != nil {
+		log.Printf("[agent] failed to persist %s state for %s: %v", status, run.ID, err)
+	}
+	_ = emitter.emit(model.StreamEvent{Type: eventType, ErrorCode: code, Message: runErr.Error(), Usage: run.Usage})
+	response := &model.ChatResponse{ConversationID: run.ConversationID, RunID: run.ID,
+		Status: status, Usage: run.Usage, CreatedAt: now}
+	if interactive {
+		return response, runErr
+	}
+	return nil, runErr
+}
+
+func (o *Orchestrator) writeCheckpoint(run *model.Run, cp *Checkpoint) error {
+	if o.checkpointStore == nil {
+		return nil
+	}
+	cp.ConversationID, cp.RunID, cp.SavedAt = run.ConversationID, run.ID, time.Now()
+	if cp.Discovery != nil {
+		cp.Discovered = cp.Discovery.Names()
+	}
+	cp.PromptTokens, cp.ComplTokens, cp.TotalTokens = run.Usage.PromptTokens, run.Usage.CompletionTokens, run.Usage.TotalTokens
+	if err := o.checkpointStore.SaveCheckpoint(cp); err != nil {
+		return fmt.Errorf("save checkpoint: %w", err)
+	}
+	run.Iteration = cp.Iteration
+	return o.store.SaveRun(run)
+}
+
+func (o *Orchestrator) commitToolBoundary(run *model.Run, cp *Checkpoint, toolLog *model.ConversationLog) error {
+	if cp.Discovery != nil {
+		cp.Discovered = cp.Discovery.Names()
+	}
+	cp.SavedAt = time.Now()
+	data, err := json.Marshal(cp)
+	if err != nil {
+		return err
+	}
+	if o.checkpointStore == nil {
+		return o.store.AddLog(toolLog)
+	}
+	if err := o.store.CommitToolResult(toolLog, data); err != nil {
+		return fmt.Errorf("commit tool boundary: %w", err)
+	}
+	run.Iteration = cp.Iteration
+	return o.store.SaveRun(run)
+}
+
+func (o *Orchestrator) buildMessages(ctx context.Context, convID string, userMsg model.Message) ([]model.Message, error) {
+	logs, err := o.store.GetLogs(convID, 200)
+	if err != nil {
+		return nil, fmt.Errorf("load conversation logs: %w", err)
+	}
+	summary, through, err := o.store.ConversationSummary(convID)
+	if err != nil {
+		return nil, fmt.Errorf("load conversation summary: %w", err)
+	}
+	visibleLogs := make([]*model.ConversationLog, 0, len(logs))
+	for _, entry := range logs {
+		if entry.ID > through {
+			visibleLogs = append(visibleLogs, entry)
+		}
+	}
+	var memories []vector.SearchResult
+	if o.memService != nil {
+		memories, err = o.memService.Search(ctx, userMsg.Content, 5)
+		if err != nil {
+			log.Printf("[memory] recall degraded: %v", err)
+		}
+	}
+	soulContent, _ := sandbox.ReadSoulFile(o.cfg.Workspace.Path, o.cfg.Workspace.SoulFile)
+	systemMessage := o.promptBuilder.BuildSystemMessage(soulContent, memories, o.toolRegistry.Names())
+	messages := []model.Message{systemMessage}
+	if summary != "" {
+		messages = append(messages, model.Message{Role: model.RoleSystem, Content: summary})
+	}
+	for _, entry := range visibleLogs {
+		messages = append(messages, conversationLogMessage(entry))
+	}
+	messages = append(messages, userMsg)
+	definitions := o.toolRegistry.ToolDefinitions()
+	result := o.comp.Compress(ctx, messages, o.llmProvider.MaxContextWindow(), definitions)
+	if result.ShouldCompress && len(visibleLogs) > 40 {
+		boundary := len(visibleLogs) - 20
+		older := make([]model.Message, 0, boundary+1)
+		if summary != "" {
+			older = append(older, model.Message{Role: model.RoleSystem, Content: summary})
+		}
+		for _, entry := range visibleLogs[:boundary] {
+			older = append(older, conversationLogMessage(entry))
+		}
+		durableSummary, generated := o.comp.Summarize(ctx, older)
+		if durableSummary != "" {
+			if err := o.store.SaveConversationSummary(convID, durableSummary, visibleLogs[boundary-1].ID); err != nil {
+				return nil, fmt.Errorf("persist conversation summary: %w", err)
+			}
+			messages = []model.Message{systemMessage, {Role: model.RoleSystem, Content: durableSummary}}
+			for _, entry := range visibleLogs[boundary:] {
+				messages = append(messages, conversationLogMessage(entry))
+			}
+			messages = append(messages, userMsg)
+			result = o.comp.Compress(ctx, messages, o.llmProvider.MaxContextWindow(), definitions)
+			log.Printf("[agent] durable summary persisted generated=%v through_log=%d", generated, visibleLogs[boundary-1].ID)
+		}
+	}
+	if result.ShouldCompress {
+		messages = repairToolCallPairing(result.Messages)
+		log.Printf("[agent] context compressed level=%d tokens=%d→%d summary=%v target=%v", result.Level,
+			result.BeforeTokenEstimate, result.TokenEstimate, result.SummaryUsed, result.TargetReached)
+	}
+	return repairToolCallPairing(messages), nil
+}
+
+func conversationLogMessage(entry *model.ConversationLog) model.Message {
+	return model.Message{Role: entry.Role, Content: entry.Content, ToolCalls: entry.ToolCalls, ToolCallID: entry.ToolCallID}
+}
+
+func (o *Orchestrator) emergencyCompress(ctx context.Context, messages []model.Message) []model.Message {
+	result := o.comp.Compress(ctx, messages, o.llmProvider.MaxContextWindow()*3/4, o.toolRegistry.ToolDefinitions())
+	if result.ShouldCompress {
+		return repairToolCallPairing(result.Messages)
+	}
+	if len(messages) <= 12 {
+		return messages
+	}
+	compressed := append([]model.Message(nil), messages[:2]...)
+	compressed = append(compressed, model.Message{Role: model.RoleSystem,
+		Content: "[Earlier conversation compressed after a context-length error.]"})
+	compressed = append(compressed, messages[len(messages)-10:]...)
+	return repairToolCallPairing(compressed)
+}
+
+func repairToolCallPairing(messages []model.Message) []model.Message {
+	assistantIDs, resultIDs := make(map[string]bool), make(map[string]bool)
+	for _, message := range messages {
+		for _, call := range message.ToolCalls {
+			assistantIDs[call.ID] = true
+		}
+		if message.Role == model.RoleTool {
+			resultIDs[message.ToolCallID] = true
+		}
+	}
+	result := make([]model.Message, 0, len(messages))
+	for _, message := range messages {
+		matched := true
+		for _, call := range message.ToolCalls {
+			matched = matched && resultIDs[call.ID]
+		}
+		if !matched || (message.Role == model.RoleTool && !assistantIDs[message.ToolCallID]) {
+			continue
+		}
+		result = append(result, message)
+	}
+	return result
+}
+
+// Stop interrupts all active runs for a conversation during replacement races.
+func (o *Orchestrator) Stop(conversationID string) bool {
+	o.mu.RLock()
+	var runIDs []string
+	for _, candidate := range o.activeRuns {
+		if candidate.convID == conversationID {
+			runIDs = append(runIDs, candidate.id)
+		}
+	}
+	o.mu.RUnlock()
+	stopped := false
+	for _, id := range runIDs {
+		stopped = o.StopRun(id) || stopped
+	}
+	return stopped
+}
+
+// StopRun cancels one exact run and its associated process tree.
+func (o *Orchestrator) StopRun(runID string) bool {
+	o.mu.RLock()
+	active := o.activeRuns[runID]
+	o.mu.RUnlock()
+	if active == nil {
+		return false
+	}
+	active.cancel()
+	if o.processRegistry != nil {
+		o.processRegistry.KillByConversation(active.convID)
+	}
+	return true
+}
+
 func (o *Orchestrator) StopAll() {
 	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	count := len(o.activeRuns)
-	for convID, cancel := range o.activeRuns {
-		cancel()
-		// Kill all subprocesses for this conversation
+	runs := make([]*activeRun, 0, len(o.activeRuns))
+	for _, active := range o.activeRuns {
+		runs = append(runs, active)
+	}
+	o.activeRuns = make(map[string]*activeRun)
+	o.mu.Unlock()
+	for _, active := range runs {
+		active.cancel()
 		if o.processRegistry != nil {
-			o.processRegistry.KillByConversation(convID)
+			o.processRegistry.KillByConversation(active.convID)
 		}
-		delete(o.activeRuns, convID)
 	}
-
-	if count > 0 {
-		log.Printf("[agent] Stopped %d active conversation(s)", count)
-	}
+	o.backgroundMu.Lock()
+	o.backgroundStopped = true
+	o.backgroundCancel()
+	o.backgroundMu.Unlock()
+	o.backgroundWG.Wait()
 }
 
-// --- Internal methods ---
-
-func (o *Orchestrator) registerRun(convID string, cancel context.CancelFunc) {
+func (o *Orchestrator) registerRun(runID, convID string, parent context.Context) (context.Context, error) {
+	runCtx, cancel := context.WithCancel(parent)
+	active := &activeRun{id: runID, convID: convID, cancel: cancel}
 	o.mu.Lock()
-	defer o.mu.Unlock()
-	// Cancel any existing run for this conversation
-	if existing, ok := o.activeRuns[convID]; ok {
-		existing()
+	var previous *activeRun
+	for _, candidate := range o.activeRuns {
+		if candidate.convID == convID {
+			previous = candidate
+			break
+		}
 	}
-	o.activeRuns[convID] = cancel
+	o.activeRuns[runID] = active
+	o.mu.Unlock()
+	if previous != nil && previous.id != runID {
+		previous.cancel()
+	}
+	return runCtx, nil
 }
 
-func (o *Orchestrator) unregisterRun(convID string) {
+func (o *Orchestrator) unregisterRun(runID string) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
-	delete(o.activeRuns, convID)
+	delete(o.activeRuns, runID)
+	o.mu.Unlock()
 }
 
-func (o *Orchestrator) ensureConversation(id, source string, metadata map[string]string) error {
+func (o *Orchestrator) ensureConversation(id string, create bool, source string, metadata map[string]string) error {
 	existing, err := o.store.GetConversation(id)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
+		if existing.ArchivedAt != nil {
+			return ErrConversationArchived
+		}
+		if create {
+			return fmt.Errorf("conversation already exists")
+		}
 		return nil
 	}
-
-	return o.store.CreateConversation(&model.Conversation{
-		ID:        id,
-		Title:     "",
-		Source:    source,
-		Metadata:  metadata,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	})
+	if !create {
+		return ErrConversationNotFound
+	}
+	now := time.Now()
+	return o.store.CreateConversation(&model.Conversation{ID: id, Source: source,
+		Metadata: metadata, CreatedAt: now, UpdatedAt: now})
 }
 
-// buildMessages constructs the full message list for the LLM.
-func (o *Orchestrator) buildMessages(ctx context.Context, convID string, userMsg model.Message) ([]model.Message, error) {
-	// Load conversation history
-	logs, err := o.store.GetLogs(convID, 100)
-	if err != nil {
-		return nil, fmt.Errorf("load conversation logs: %w", err)
-	}
-
-	// Convert logs to messages
-	var messages []model.Message
-
-	// Add system prompt with memories
-	var memResults []vector.SearchResult
-	if o.memService != nil {
-		memResults, _ = o.memService.Search(ctx, userMsg.Content, 5)
-	}
-	toolNames := o.toolRegistry.Names()
-
-	// Read SOUL.md on every request (no caching, graceful degradation)
-	soulContent, _ := sandbox.ReadSoulFile(o.cfg.Workspace.Path, o.cfg.Workspace.SoulFile)
-
-	systemMsg := o.promptBuilder.BuildSystemMessage(soulContent, memResults, toolNames)
-	messages = append(messages, systemMsg)
-
-	// Add history
-	for _, l := range logs {
-		messages = append(messages, model.Message{
-			Role:    l.Role,
-			Content: l.Content,
-		})
-	}
-
-	// Add current user message
-	messages = append(messages, userMsg)
-
-	// Compress if needed using the new intelligent compressor
-	result := o.comp.Compress(ctx, messages, o.cfg.LLM.ContextWindow)
-	if result.ShouldCompress {
-		messages = result.Messages
-		log.Printf("[agent] Context compressed (level=%d, tokens: %d→%d, summary=%v)",
-			result.Level, result.TokenEstimate, result.TokenEstimate, result.SummaryUsed)
-	}
-
-	return messages, nil
-}
-
-// runLoop executes the non-streaming agent loop (for sync chat).
-func (o *Orchestrator) runLoop(ctx context.Context, convID string, messages []model.Message) (reply, intent string, actions []model.Action, usage *model.UsageInfo, err error) {
-	tools := o.toolRegistry.ToolDefinitions()
-	totalUsage := &model.UsageInfo{}
-	budget := NewIterationBudget(o.cfg.LLM.MaxToolIterations, 0)
-
-	for !budget.Exhausted() {
-		select {
-		case <-ctx.Done():
-			return reply, model.IntentChat, actions, totalUsage, ctx.Err()
-		default:
-		}
-
-		resp, usageInfo, err := o.llmProvider.Complete(ctx, messages, tools)
-		if err != nil {
-			// Classify and log the error
-			shouldContinue := classifyAndLog(err)
-			if shouldContinue {
-				// Context length exceeded — try recompressing and retrying
-				budget.RecordIteration(0)
-				if budget.Exhausted() {
-					return "", model.IntentChat, actions, totalUsage, fmt.Errorf("%s", budget.ExceededMessage())
-				}
-				log.Printf("[agent] Attempting emergency compression after context length error")
-				compressed := o.emergencyCompress(ctx, messages)
-				if len(compressed) == len(messages) {
-					return "", model.IntentChat, actions, totalUsage, fmt.Errorf("context length exceeded and compression failed to reduce messages")
-				}
-				messages = compressed
-				continue
-			}
-			return "", model.IntentChat, actions, totalUsage, fmt.Errorf("LLM call failed: %w", err)
-		}
-
-		totalUsage.PromptTokens += usageInfo.PromptTokens
-		totalUsage.CompletionTokens += usageInfo.CompletionTokens
-		totalUsage.TotalTokens += usageInfo.TotalTokens
-		budget.RecordIteration(usageInfo.TotalTokens)
-
-		// No tool calls - we have our final response
-		if len(resp.ToolCalls) == 0 {
-			reply = resp.Content
-			intent = classifyIntent(reply)
-			return reply, intent, actions, totalUsage, nil
-		}
-
-		// Add assistant message with tool calls to history
-		messages = append(messages, *resp)
-
-		// Execute each tool call
-		for _, tc := range resp.ToolCalls {
-			args, parseErr := tool.UnmarshalArgs(tc.Function.Arguments)
-			if parseErr != nil {
-				args = map[string]any{}
-			}
-
-			result, execErr := o.toolRegistry.Dispatch(ctx, tc.Function.Name, args)
-			if execErr != nil {
-				result = fmt.Sprintf("Error: %v", execErr)
-			}
-
-			// Check for clarify request
-			if builtin.IsClarifyRequest(result) {
-				if clarifyReq, _ := builtin.ParseClarifyRequest(result); clarifyReq != nil {
-					userResponse, ok := o.waitForClarify(ctx, convID, 5*time.Minute)
-					if ok {
-						result = fmt.Sprintf("User responded: %s", userResponse)
-					} else {
-						result = "User did not respond. Proceed with best judgment."
-					}
-				}
-			}
-
-			actions = append(actions, model.Action{
-				Tool:   tc.Function.Name,
-				Status: statusFromErr(execErr),
-				Result: truncateStr(result, 200),
-			})
-
-			// Add tool result to messages
-			messages = append(messages, model.Message{
-				Role:       model.RoleTool,
-				Content:    result,
-				ToolCallID: tc.ID,
-			})
-		}
-
-		// Save checkpoint after tool execution batch
-		o.saveCheckpoint(convID, budget.CurrentIteration(), messages, actions, totalUsage)
-	}
-
-	return "", intent, actions, totalUsage, fmt.Errorf("%s", budget.ExceededMessage())
-}
-
-// runStreamLoop executes the streaming agent loop.
-func (o *Orchestrator) runStreamLoop(ctx context.Context, convID string, messages []model.Message, events chan<- model.StreamEvent) (reply, intent string, actions []model.Action, usage *model.UsageInfo, err error) {
-	tools := o.toolRegistry.ToolDefinitions()
-	totalUsage := &model.UsageInfo{}
-	budget := NewIterationBudget(o.cfg.LLM.MaxToolIterations, 0)
-
-	for !budget.Exhausted() {
-		select {
-		case <-ctx.Done():
-			return reply, model.IntentChat, actions, totalUsage, ctx.Err()
-		default:
-		}
-
-		events <- model.StreamEvent{Type: "thinking", Iteration: budget.CurrentIteration() + 1}
-
-		chunks, err := o.llmProvider.CompleteStream(ctx, messages, tools)
-		if err != nil {
-			// Classify and log the error
-			shouldContinue := classifyAndLog(err)
-			if shouldContinue {
-				budget.RecordIteration(0)
-				if budget.Exhausted() {
-					return "", model.IntentChat, actions, totalUsage, fmt.Errorf("%s", budget.ExceededMessage())
-				}
-				log.Printf("[agent] Attempting emergency compression after context length error")
-				compressed := o.emergencyCompress(ctx, messages)
-				if len(compressed) == len(messages) {
-					return "", model.IntentChat, actions, totalUsage, fmt.Errorf("context length exceeded and compression failed to reduce messages")
-				}
-				messages = compressed
-				continue
-			}
-			return "", model.IntentChat, actions, totalUsage, fmt.Errorf("LLM stream failed: %w", err)
-		}
-
-		// Collect the full response from stream chunks
-		var contentBuilder strings.Builder
-		var toolCallCollector = newToolCallCollector()
-		var streamUsage *model.UsageInfo
-
-		for chunk := range chunks {
-			if chunk.Err != nil {
-				log.Printf("[agent] Stream error: %v", chunk.Err)
-				continue
-			}
-
-			// Content chunk
-			if chunk.Content != "" {
-				contentBuilder.WriteString(chunk.Content)
-				events <- model.StreamEvent{Type: "chunk", Content: chunk.Content}
-			}
-
-			// Tool call deltas
-			if len(chunk.ToolCalls) > 0 {
-				toolCallCollector.add(chunk.ToolCalls)
-			}
-
-			// Usage
-			if chunk.Usage != nil {
-				streamUsage = &model.UsageInfo{
-					PromptTokens:     chunk.Usage.PromptTokens,
-					CompletionTokens: chunk.Usage.CompletionTokens,
-					TotalTokens:      chunk.Usage.TotalTokens,
-				}
-			}
-		}
-
-		var iterTokens int
-		if streamUsage != nil {
-			iterTokens = streamUsage.TotalTokens
-			totalUsage.PromptTokens += streamUsage.PromptTokens
-			totalUsage.CompletionTokens += streamUsage.CompletionTokens
-			totalUsage.TotalTokens += streamUsage.TotalTokens
-		}
-		budget.RecordIteration(iterTokens)
-
-		// Build the complete assistant message
-		toolCalls := toolCallCollector.build()
-		reply = contentBuilder.String()
-
-		// Validate tool calls for completeness (stream may have been interrupted)
-		if len(toolCalls) > 0 {
-			valid := true
-			for _, tc := range toolCalls {
-				if tc.Function.Name == "" || tc.ID == "" {
-					valid = false
-					log.Printf("[agent] Incomplete tool call detected (name=%q, id=%q), treating as failed response", tc.Function.Name, tc.ID)
-					break
-				}
-			}
-			if !valid {
-				// Don't add incomplete tool calls to history or execute them
-				return reply, model.IntentChat, actions, totalUsage, fmt.Errorf("stream interrupted: incomplete tool calls")
-			}
-		}
-
-		// No tool calls - we have our final response
-		if len(toolCalls) == 0 {
-			intent = classifyIntent(reply)
-			return reply, intent, actions, totalUsage, nil
-		}
-
-		// Emit tool_call event
-		tNames := make([]string, len(toolCalls))
-		for i, tc := range toolCalls {
-			tNames[i] = tc.Function.Name
-		}
-		events <- model.StreamEvent{Type: "tool_call", Tools: tNames}
-
-		// Add assistant message with tool calls
-		assistantMsg := model.Message{
-			Role:      model.RoleAssistant,
-			Content:   reply,
-			ToolCalls: toolCalls,
-		}
-		messages = append(messages, assistantMsg)
-
-		// Execute tools
-		for _, tc := range toolCalls {
-			events <- model.StreamEvent{
-				Type:     "tool.started",
-				ToolName: tc.Function.Name,
-				Preview:  truncateStr(tc.Function.Arguments, 100),
-			}
-
-			args, parseErr := tool.UnmarshalArgs(tc.Function.Arguments)
-			if parseErr != nil {
-				args = map[string]any{}
-			}
-
-			result, execErr := o.toolRegistry.Dispatch(ctx, tc.Function.Name, args)
-			if execErr != nil {
-				result = fmt.Sprintf("Error: %v", execErr)
-			}
-
-			// Check for clarify request and emit SSE event
-			if tc.Function.Name == "clarify" && builtin.IsClarifyRequest(result) {
-				if clarifyReq, parseErr := builtin.ParseClarifyRequest(result); parseErr == nil && clarifyReq != nil {
-					events <- model.StreamEvent{
-						Type:           "clarify",
-						ClarifyKind:    string(clarifyReq.Kind),
-						ClarifyMessage: clarifyReq.Message,
-						ClarifyOptions: clarifyReq.Options,
-					}
-					userResponse, ok := o.waitForClarify(ctx, convID, 5*time.Minute)
-					if ok {
-						result = fmt.Sprintf("User responded: %s", userResponse)
-					} else {
-						result = "User did not respond. Proceed with best judgment."
-					}
-				}
-			}
-
-			actions = append(actions, model.Action{
-				Tool:   tc.Function.Name,
-				Status: statusFromErr(execErr),
-				Result: truncateStr(result, 200),
-			})
-
-			events <- model.StreamEvent{
-				Type:    "progress",
-				Summary: truncateStr(result, 200),
-			}
-
-			messages = append(messages, model.Message{
-				Role:       model.RoleTool,
-				Content:    result,
-				ToolCallID: tc.ID,
-			})
-		}
-
-		// Save checkpoint after tool execution batch
-		o.saveCheckpoint(convID, budget.CurrentIteration(), messages, actions, totalUsage)
-	}
-
-	return "", intent, actions, totalUsage, fmt.Errorf("%s", budget.ExceededMessage())
-}
-
-// autoTitle generates a title for new conversations.
-// It attempts to use the LLM for a meaningful title, falling back to truncation.
-func (o *Orchestrator) autoTitle(convID, firstMessage string) {
-	conv, err := o.store.GetConversation(convID)
-	if err != nil || conv == nil || conv.Title != "" {
-		return
-	}
-
-	// Try LLM-generated title (async, non-blocking)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[agent] autoTitle panic recovered: %v", r)
-			}
-		}()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		messages := []model.Message{
-			{
-				Role:    model.RoleUser,
-				Content: "Generate a very short title (max 8 words, no quotes) for a conversation that starts with: " + firstMessage,
-			},
-		}
-		resp, _, err := o.llmProvider.Complete(ctx, messages, nil)
-		if err == nil && resp != nil && resp.Content != "" {
-			title := strings.TrimSpace(resp.Content)
-			// Safe UTF-8 truncation
-			runes := []rune(title)
-			if len(runes) > 80 {
-				title = string(runes[:80])
-			}
-			title = strings.Trim(title, "\"'")
-			if title != "" {
-				o.store.UpdateConversationTitle(convID, title)
-				return
-			}
-		}
-
-		// Fallback: truncate the first message (safe UTF-8)
-		runes := []rune(firstMessage)
-		title := string(runes)
-		if len(runes) > 50 {
-			title = string(runes[:50]) + "..."
-		}
-		o.store.UpdateConversationTitle(convID, title)
-	}()
-}
-
-// emergencyCompress aggressively compresses messages when context length is exceeded.
-func (o *Orchestrator) emergencyCompress(ctx context.Context, messages []model.Message) []model.Message {
-	result := o.comp.Compress(ctx, messages, o.cfg.LLM.ContextWindow*3/4) // Target 75% of window
-	if result.ShouldCompress {
-		log.Printf("[agent] Emergency compression applied: %d → %d messages", len(messages), len(result.Messages))
-		return repairToolCallPairing(result.Messages)
-	}
-	// Fallback: just keep first 2 + last 10 messages (with overlap guard)
-	if len(messages) > 3 {
-		keepFirst := 2
-		keepLast := 10
-
-		// Guard against overlap: if keepFirst+keepLast >= len(messages), reduce keepLast
-		if keepFirst+keepLast >= len(messages) {
-			keepLast = len(messages) - keepFirst - 1
-			if keepLast < 1 {
-				keepLast = 1
-			}
-		}
-
-		compressed := make([]model.Message, 0, keepFirst+1+keepLast)
-		compressed = append(compressed, messages[:keepFirst]...)
-		compressed = append(compressed, model.Message{
-			Role:    model.RoleSystem,
-			Content: "[Earlier conversation was compressed due to context length limits. Key context preserved below.]",
-		})
-		compressed = append(compressed, messages[len(messages)-keepLast:]...)
-		return repairToolCallPairing(compressed)
-	}
-	return messages
-}
-
-// repairToolCallPairing removes orphaned tool calls and tool results from a message list.
-// This ensures the LLM API always sees valid assistant.tool_calls → role=tool pairings.
-func repairToolCallPairing(messages []model.Message) []model.Message {
-	// Build sets of tool_call IDs from assistant messages and tool results
-	assistantIDs := make(map[string]bool)
-	resultIDs := make(map[string]bool)
-
-	for _, m := range messages {
-		if m.Role == model.RoleAssistant && len(m.ToolCalls) > 0 {
-			for _, tc := range m.ToolCalls {
-				assistantIDs[tc.ID] = true
-			}
-		}
-		if m.Role == model.RoleTool && m.ToolCallID != "" {
-			resultIDs[m.ToolCallID] = true
-		}
-	}
-
-	// Filter: keep only messages with valid pairings
-	result := make([]model.Message, 0, len(messages))
-	for _, m := range messages {
-		if m.Role == model.RoleAssistant && len(m.ToolCalls) > 0 {
-			// Keep only if ALL tool calls have matching results
-			allMatched := true
-			for _, tc := range m.ToolCalls {
-				if !resultIDs[tc.ID] {
-					allMatched = false
-					break
-				}
-			}
-			if !allMatched {
-				// Drop this assistant message (orphaned tool calls)
-				continue
-			}
-		}
-		if m.Role == model.RoleTool && m.ToolCallID != "" {
-			// Keep only if there's a matching assistant tool call
-			if !assistantIDs[m.ToolCallID] {
-				// Drop this tool result (orphaned result)
-				continue
-			}
-		}
-		result = append(result, m)
-	}
-	return result
-}
-
-// RespondClarify delivers a user's response to a pending clarify request.
-func (o *Orchestrator) RespondClarify(convID, response string) bool {
+func (o *Orchestrator) RespondClarify(id, response string) bool {
 	o.clarifyMu.RLock()
-	ch, ok := o.clarifyCh[convID]
+	requestID := id
+	if mapped := o.clarifyRequests[id]; mapped != "" {
+		requestID = mapped
+	}
+	ch := o.clarifyCh[requestID]
 	o.clarifyMu.RUnlock()
-
-	if !ok {
+	if ch == nil {
 		return false
 	}
-
-	// Use a brief timeout to handle the race between the tool completing
-	// and waitForClarify starting to listen on the channel
 	select {
 	case ch <- response:
 		return true
-	case <-time.After(1 * time.Second):
+	default:
 		return false
 	}
 }
 
-// waitForClarify blocks until the user responds to a clarify request, the context
-// is cancelled, or timeout expires.
-func (o *Orchestrator) waitForClarify(ctx context.Context, convID string, timeout time.Duration) (string, bool) {
+func (o *Orchestrator) waitForClarify(ctx context.Context, convID, requestID string, timeout time.Duration) (string, bool) {
 	ch := make(chan string, 1)
 	o.clarifyMu.Lock()
-	o.clarifyCh[convID] = ch
+	o.clarifyCh[requestID] = ch
+	o.clarifyRequests[convID] = requestID
 	o.clarifyMu.Unlock()
-
 	defer func() {
 		o.clarifyMu.Lock()
-		delete(o.clarifyCh, convID)
+		delete(o.clarifyCh, requestID)
+		delete(o.clarifyRequests, convID)
 		o.clarifyMu.Unlock()
 	}()
-
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case response := <-ch:
 		return response, true
 	case <-ctx.Done():
 		return "", false
-	case <-time.After(timeout):
+	case <-timer.C:
 		return "", false
 	}
 }
 
-// --- Helpers ---
+func (o *Orchestrator) RespondApproval(id string, response tool.ApprovalResponse) bool {
+	return o.permissions != nil && o.permissions.Respond(id, response)
+}
+
+func (o *Orchestrator) PendingApprovals() []tool.ApprovalRequest {
+	if o.permissions == nil {
+		return nil
+	}
+	return o.permissions.Pending()
+}
+
+func (o *Orchestrator) autoTitle(convID, firstMessage string) {
+	conv, err := o.store.GetConversation(convID)
+	if err != nil || conv == nil || conv.Title != "" {
+		return
+	}
+	o.backgroundMu.Lock()
+	if o.backgroundStopped || o.backgroundCtx.Err() != nil {
+		o.backgroundMu.Unlock()
+		return
+	}
+	o.backgroundWG.Add(1)
+	o.backgroundMu.Unlock()
+	go func() {
+		defer o.backgroundWG.Done()
+		defer func() { _ = recover() }()
+		ctx, cancel := context.WithTimeout(o.backgroundCtx, 10*time.Second)
+		defer cancel()
+		messages := []model.Message{{Role: model.RoleUser,
+			Content: "Generate a very short title (max 8 words, no quotes) for: " + firstMessage}}
+		response, _, err := o.llmProvider.Complete(ctx, messages, nil)
+		title := ""
+		if err == nil && response != nil {
+			title = strings.Trim(strings.TrimSpace(response.Content), "\"'")
+		}
+		if title == "" {
+			title = firstMessage
+		}
+		runes := []rune(title)
+		if len(runes) > 80 {
+			title = string(runes[:80])
+		}
+		if err := o.store.UpdateConversationTitle(convID, title); err != nil && ctx.Err() == nil {
+			log.Printf("[agent] update title: %v", err)
+		}
+	}()
+}
 
 func classifyIntent(reply string) string {
 	lower := strings.ToLower(reply)
-	if strings.Contains(lower, "i've") || strings.Contains(lower, "done") || strings.Contains(lower, "completed") {
-		return model.IntentAction
+	for _, marker := range []string{"i've", "done", "completed", "已创建", "已修改", "已完成", "已写入"} {
+		if strings.Contains(lower, marker) {
+			return model.IntentAction
+		}
 	}
 	return model.IntentQuery
 }
@@ -789,78 +886,107 @@ func statusFromErr(err error) string {
 	return "success"
 }
 
-func truncateStr(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
+func addUsage(total *model.UsageInfo, usage *model.UsageInfo) {
+	if total == nil || usage == nil {
+		return
 	}
-	return string(runes[:maxLen]) + "..."
+	total.PromptTokens += usage.PromptTokens
+	total.CompletionTokens += usage.CompletionTokens
+	total.TotalTokens += usage.TotalTokens
 }
 
-// toolCallCollector accumulates streaming tool call deltas into complete tool calls.
+func tokenTotal(usage *model.UsageInfo) int {
+	if usage == nil {
+		return 0
+	}
+	return usage.TotalTokens
+}
+
+func truncateStr(value string, maximum int) string {
+	runes := []rune(value)
+	if len(runes) <= maximum {
+		return value
+	}
+	return string(runes[:maximum]) + "..."
+}
+
+type runEmitter struct {
+	ctx      context.Context
+	store    *store.SQLite
+	run      *model.Run
+	out      chan<- model.StreamEvent
+	mu       sync.Mutex
+	sequence uint64
+}
+
+func (e *runEmitter) emit(event model.StreamEvent) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sequence++
+	event.SchemaVersion = 1
+	event.EventID = uuid.NewString()
+	event.Sequence = e.sequence
+	event.RunID = e.run.ID
+	event.ConversationID = e.run.ConversationID
+	event.Timestamp = time.Now()
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if err := e.store.AppendRunEvent(&model.RunEvent{EventID: event.EventID, RunID: e.run.ID,
+		ConversationID: e.run.ConversationID, Sequence: event.Sequence, Type: event.Type,
+		Payload: payload, CreatedAt: event.Timestamp}); err != nil {
+		return fmt.Errorf("persist stream event: %w", err)
+	}
+	if e.out != nil {
+		select {
+		case e.out <- event:
+		case <-e.ctx.Done():
+			return e.ctx.Err()
+		}
+	}
+	return nil
+}
+
 type toolCallCollector struct {
 	calls map[int]*toolCallBuilder
-	order []int // Track insertion order for deterministic output
+	order []int
 }
 
 type toolCallBuilder struct {
-	index     int
 	id        string
-	typ       string
 	name      string
 	arguments strings.Builder
 }
 
 func newToolCallCollector() *toolCallCollector {
-	return &toolCallCollector{
-		calls: make(map[int]*toolCallBuilder),
-		order: make([]int, 0),
-	}
+	return &toolCallCollector{calls: make(map[int]*toolCallBuilder)}
 }
 
 func (c *toolCallCollector) add(deltas []llm.ToolCallDelta) {
-	for _, d := range deltas {
-		b, ok := c.calls[d.Index]
-		if !ok {
-			b = &toolCallBuilder{index: d.Index}
-			c.calls[d.Index] = b
-			c.order = append(c.order, d.Index)
+	for _, delta := range deltas {
+		builder := c.calls[delta.Index]
+		if builder == nil {
+			builder = &toolCallBuilder{}
+			c.calls[delta.Index] = builder
+			c.order = append(c.order, delta.Index)
 		}
-
-		if d.ID != "" {
-			b.id = d.ID
+		if delta.ID != "" {
+			builder.id = delta.ID
 		}
-		if d.Type != "" {
-			b.typ = d.Type
+		if delta.Name != "" {
+			builder.name = delta.Name
 		}
-		if d.Name != "" {
-			b.name = d.Name
-		}
-		if d.Arguments != "" {
-			b.arguments.WriteString(d.Arguments)
-		}
+		builder.arguments.WriteString(delta.Arguments)
 	}
 }
 
 func (c *toolCallCollector) build() []model.ToolCall {
-	if len(c.calls) == 0 {
-		return nil
+	calls := make([]model.ToolCall, 0, len(c.calls))
+	for _, index := range c.order {
+		builder := c.calls[index]
+		calls = append(calls, model.ToolCall{ID: builder.id, Type: "function",
+			Function: model.ToolFunction{Name: builder.name, Arguments: builder.arguments.String()}})
 	}
-
-	result := make([]model.ToolCall, 0, len(c.calls))
-	for _, idx := range c.order {
-		b := c.calls[idx]
-		if b.id == "" {
-			continue
-		}
-		result = append(result, model.ToolCall{
-			ID:   b.id,
-			Type: "function",
-			Function: model.ToolFunction{
-				Name:      b.name,
-				Arguments: b.arguments.String(),
-			},
-		})
-	}
-	return result
+	return calls
 }

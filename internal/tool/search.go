@@ -23,11 +23,11 @@ const (
 
 // ToolCatalog is a searchable index of tool metadata for the tool_search bridge.
 type ToolCatalog struct {
-	entries   []catalogEntry
+	entries    []catalogEntry
 	docLengths []float64
-	avgDL     float64
-	docFreq   map[string]int
-	nDocs     int
+	avgDL      float64
+	docFreq    map[string]int
+	nDocs      int
 }
 
 type catalogEntry struct {
@@ -44,7 +44,7 @@ func BuildCatalog(registry *Registry) *ToolCatalog {
 
 	for _, rt := range tools {
 		name := rt.Provider.Name()
-		if IsCoreTool(name) {
+		if IsCoreTool(name) || !registry.IsToolEnabled(name) {
 			continue
 		}
 		desc := rt.Provider.Description()
@@ -118,7 +118,7 @@ func (c *ToolCatalog) Search(query string, limit int) []SearchResult {
 		if df == 0 {
 			continue
 		}
-		idf := math.Log((float64(c.nDocs) - df + 0.5) / (df + 0.5) + 1)
+		idf := math.Log((float64(c.nDocs)-df+0.5)/(df+0.5) + 1)
 
 		for di, entry := range c.entries {
 			tf := countTerm(entry.tokens, qt)
@@ -235,7 +235,10 @@ func (t *ToolSearchTool) getCatalog() *ToolCatalog {
 	return t.cachedCatalog
 }
 
-func (t *ToolSearchTool) Name() string        { return "tool_search" }
+func (t *ToolSearchTool) Name() string { return "tool_search" }
+func (t *ToolSearchTool) Capabilities() Capabilities {
+	return Capabilities{ReadOnly: true, ConcurrentSafe: true, SideEffectScope: "none", RiskLevel: "low", MaxOutputBytes: 20_000}
+}
 func (t *ToolSearchTool) Description() string {
 	return "Search for available tools by keyword. Returns matching tool names and descriptions. Use when you need a tool that isn't in your current set."
 }
@@ -269,6 +272,11 @@ func (t *ToolSearchTool) Execute(ctx context.Context, args map[string]any) (stri
 
 	catalog := t.getCatalog()
 	results := catalog.Search(query, limit)
+	if info, ok := ExecutionInfoFromContext(ctx); ok && info.Discovery != nil {
+		for _, result := range results {
+			info.Discovery.Discover(result.Name)
+		}
+	}
 
 	if len(results) == 0 {
 		return "No matching tools found. Try a different search query.", nil
@@ -292,7 +300,10 @@ func NewToolDescribeTool(registry *Registry) *ToolDescribeTool {
 	return &ToolDescribeTool{registry: registry}
 }
 
-func (t *ToolDescribeTool) Name() string        { return "tool_describe" }
+func (t *ToolDescribeTool) Name() string { return "tool_describe" }
+func (t *ToolDescribeTool) Capabilities() Capabilities {
+	return Capabilities{ReadOnly: true, ConcurrentSafe: true, SideEffectScope: "none", RiskLevel: "low", MaxOutputBytes: 50_000}
+}
 func (t *ToolDescribeTool) Description() string {
 	return "Get detailed information about a specific tool, including its parameters and usage instructions."
 }
@@ -320,8 +331,11 @@ func (t *ToolDescribeTool) Execute(ctx context.Context, args map[string]any) (st
 		return fmt.Sprintf("Tool %q not found. Use tool_search to find available tools.", name), nil
 	}
 
-	schema := rt.Provider.Schema()
+	schema := schemaForProvider(rt.Provider)
 	schemaJSON, _ := json.MarshalIndent(schema, "", "  ")
+	if info, ok := ExecutionInfoFromContext(ctx); ok && info.Discovery != nil {
+		info.Discovery.Discover(name)
+	}
 
 	return fmt.Sprintf("Tool: %s\nDescription: %s\nSource: %s\nParameters:\n%s",
 		rt.Provider.Name(), rt.Provider.Description(), rt.Source, string(schemaJSON)), nil

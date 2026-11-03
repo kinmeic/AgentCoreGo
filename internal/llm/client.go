@@ -25,12 +25,9 @@ var _ Provider = (*Client)(nil)
 
 // NewClient creates a new LLM client.
 func NewClient(cfg config.LLMConfig) *Client {
-	return &Client{
-		cfg: cfg,
-		httpClient: &http.Client{
-			Timeout: 5 * time.Minute,
-		},
-	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 2 * time.Minute
+	return &Client{cfg: cfg, httpClient: &http.Client{Transport: transport}}
 }
 
 // Name returns the provider identifier.
@@ -44,12 +41,14 @@ func (c *Client) MaxContextWindow() int { return c.cfg.ContextWindow }
 
 // completionRequest is the request body for the chat completions API.
 type completionRequest struct {
-	Model       string                `json:"model"`
-	Messages    []apiMessage          `json:"messages"`
+	Model       string                 `json:"model"`
+	Messages    []apiMessage           `json:"messages"`
 	Tools       []model.ToolDefinition `json:"tools,omitempty"`
-	Stream      bool                  `json:"stream"`
-	Temperature float64               `json:"temperature,omitempty"`
-	StreamOpts  *streamOptions        `json:"stream_options,omitempty"`
+	Stream      bool                   `json:"stream"`
+	Temperature float64                `json:"temperature,omitempty"`
+	StreamOpts  *streamOptions         `json:"stream_options,omitempty"`
+	MaxTokens   int                    `json:"max_tokens,omitempty"`
+	Reasoning   string                 `json:"reasoning_effort,omitempty"`
 }
 
 type streamOptions struct {
@@ -127,6 +126,8 @@ func (c *Client) Complete(ctx context.Context, messages []model.Message, tools [
 		Tools:       tools,
 		Stream:      false,
 		Temperature: c.cfg.Temperature,
+		MaxTokens:   c.cfg.MaxOutputTokens,
+		Reasoning:   c.cfg.ReasoningEffort,
 	}
 
 	resp, err := c.doRequest(ctx, reqBody)
@@ -135,7 +136,7 @@ func (c *Client) Complete(ctx context.Context, messages []model.Message, tools [
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
 		return nil, nil, fmt.Errorf("read response body: %w", err)
 	}
@@ -191,6 +192,8 @@ func (c *Client) CompleteStream(ctx context.Context, messages []model.Message, t
 		Tools:       tools,
 		Stream:      true,
 		Temperature: c.cfg.Temperature,
+		MaxTokens:   c.cfg.MaxOutputTokens,
+		Reasoning:   c.cfg.ReasoningEffort,
 		StreamOpts:  &streamOptions{IncludeUsage: true},
 	}
 
@@ -200,7 +203,7 @@ func (c *Client) CompleteStream(ctx context.Context, messages []model.Message, t
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 		resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("read error response (status %d): %w", resp.StatusCode, readErr)
@@ -229,6 +232,9 @@ func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*htt
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(attempt*attempt) * time.Second
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -252,7 +258,7 @@ func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*htt
 
 		// Retry on rate limit or server errors
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			body, readErr := io.ReadAll(resp.Body)
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 			resp.Body.Close()
 			if readErr != nil {
 				lastErr = fmt.Errorf("read error response (status %d): %w", resp.StatusCode, readErr)

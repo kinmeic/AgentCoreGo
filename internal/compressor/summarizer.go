@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -78,7 +79,10 @@ func formatConversationForSummary(messages []model.Message) string {
 		case model.RoleTool:
 			buf.WriteString("Tool result: ")
 		case model.RoleSystem:
-			continue // Skip system messages in summary input
+			if !strings.HasPrefix(m.Content, "## Conversation Summary") && !strings.HasPrefix(m.Content, "[Compressed conversation") {
+				continue
+			}
+			buf.WriteString("Previous summary: ")
 		}
 		content := m.Content
 		// Safe UTF-8 truncation

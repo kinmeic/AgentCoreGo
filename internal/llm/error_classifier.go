@@ -11,15 +11,15 @@ import (
 type ErrorKind int
 
 const (
-	ErrorUnknown       ErrorKind = iota
-	ErrorRateLimit               // 429 - retry with backoff
-	ErrorServerError             // 5xx - retry with backoff
-	ErrorAuthFailed              // 401 - do not retry
-	ErrorForbidden               // 403 - do not retry
-	ErrorNotFound                // 404 - do not retry
-	ErrorBadRequest              // 400 - do not retry
-	ErrorContextLength           // context length exceeded - truncate and retry
-	ErrorModelOverloaded         // model overloaded - retry
+	ErrorUnknown         ErrorKind = iota
+	ErrorRateLimit                 // 429 - retry with backoff
+	ErrorServerError               // 5xx - retry with backoff
+	ErrorAuthFailed                // 401 - do not retry
+	ErrorForbidden                 // 403 - do not retry
+	ErrorNotFound                  // 404 - do not retry
+	ErrorBadRequest                // 400 - do not retry
+	ErrorContextLength             // context length exceeded - truncate and retry
+	ErrorModelOverloaded           // model overloaded - retry
 )
 
 // APIError represents a classified API error.

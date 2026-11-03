@@ -28,12 +28,12 @@ type Provider interface {
 
 // ProviderConfig holds configuration for a single LLM provider.
 type ProviderConfig struct {
-	Name            string  `yaml:"name"`
-	BaseURL         string  `yaml:"base_url"`
-	APIKey          string  `yaml:"api_key"`
-	Model           string  `yaml:"model"`
-	ContextWindow   int     `yaml:"context_window"`
-	Temperature     float64 `yaml:"temperature"`
-	MaxRetries      int     `yaml:"max_retries"`
-	MaxToolIterations int   `yaml:"max_tool_iterations"`
+	Name              string  `yaml:"name"`
+	BaseURL           string  `yaml:"base_url"`
+	APIKey            string  `yaml:"api_key"`
+	Model             string  `yaml:"model"`
+	ContextWindow     int     `yaml:"context_window"`
+	Temperature       float64 `yaml:"temperature"`
+	MaxRetries        int     `yaml:"max_retries"`
+	MaxToolIterations int     `yaml:"max_tool_iterations"`
 }

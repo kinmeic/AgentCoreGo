@@ -3,6 +3,7 @@ package llm
 import (
 	"agent-core/internal/model"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync/atomic"
@@ -44,13 +45,12 @@ func (f *FailoverClient) Complete(ctx context.Context, messages []model.Message,
 	startIdx := int(f.current.Load())
 
 	for i := startIdx; i < len(f.providers); i++ {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
 		p := f.providers[i]
 		resp, usage, err := p.Complete(ctx, messages, tools)
 		if err == nil {
-			// Success — reset to primary for next request
-			if i > 0 {
-				f.current.Store(0)
-			}
 			return resp, usage, nil
 		}
 
@@ -74,13 +74,12 @@ func (f *FailoverClient) CompleteStream(ctx context.Context, messages []model.Me
 	startIdx := int(f.current.Load())
 
 	for i := startIdx; i < len(f.providers); i++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		p := f.providers[i]
 		ch, err := p.CompleteStream(ctx, messages, tools)
 		if err == nil {
-			// Success — reset to primary for next request
-			if i > 0 {
-				f.current.Store(0)
-			}
 			return ch, nil
 		}
 
@@ -124,9 +123,8 @@ func (f *FailoverClient) Reset() {
 
 // shouldFailover determines whether an error warrants provider failover.
 func shouldFailover(err error) bool {
-	apiErr, ok := err.(*APIError)
-	if !ok {
-		// Non-API errors (network timeouts, etc.) should trigger failover
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		return true
 	}
 	switch apiErr.Kind {

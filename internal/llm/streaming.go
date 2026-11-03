@@ -29,10 +29,10 @@ type StreamChunk struct {
 
 // ToolCallDelta represents a partial tool call update from the stream.
 type ToolCallDelta struct {
-	Index    int
-	ID       string
-	Type     string
-	Name     string
+	Index     int
+	ID        string
+	Type      string
+	Name      string
 	Arguments string
 }
 
@@ -47,24 +47,24 @@ type StreamUsage struct {
 type streamResponse struct {
 	ID      string `json:"id"`
 	Choices []struct {
-		Index        int    `json:"index"`
-		Delta        delta  `json:"delta"`
+		Index        int     `json:"index"`
+		Delta        delta   `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *StreamUsage `json:"usage,omitempty"`
 }
 
 type delta struct {
-	Role      string         `json:"role,omitempty"`
-	Content   string         `json:"content,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   string          `json:"content,omitempty"`
 	ToolCalls []toolCallDelta `json:"tool_calls,omitempty"`
 }
 
 type toolCallDelta struct {
-	Index    int         `json:"index"`
-	ID       string      `json:"id,omitempty"`
-	Type     string      `json:"type,omitempty"`
-	Function *funcDelta  `json:"function,omitempty"`
+	Index    int        `json:"index"`
+	ID       string     `json:"id,omitempty"`
+	Type     string     `json:"type,omitempty"`
+	Function *funcDelta `json:"function,omitempty"`
 }
 
 type funcDelta struct {
@@ -91,16 +91,18 @@ func parseSSEStream(ctx context.Context, reader io.Reader, ch chan<- StreamChunk
 		}
 	}
 
+	completed := false
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// SSE format: "data: {...}"
-		if !strings.HasPrefix(line, "data: ") {
+		// SSE allows an optional single space after the field colon.
+		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 
-		data := strings.TrimPrefix(line, "data: ")
+		data := strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")
 		if data == "[DONE]" {
+			completed = true
 			return
 		}
 
@@ -173,5 +175,9 @@ func parseSSEStream(ctx context.Context, reader io.Reader, ch chan<- StreamChunk
 
 	if err := scanner.Err(); err != nil {
 		sendChunk(StreamChunk{Err: fmt.Errorf("read stream: %w", err)})
+		return
+	}
+	if ctx.Err() == nil && !completed {
+		sendChunk(StreamChunk{Err: fmt.Errorf("read stream: %w", io.ErrUnexpectedEOF)})
 	}
 }

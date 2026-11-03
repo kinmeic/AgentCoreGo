@@ -1,0 +1,33 @@
+[Unit]
+Description=AgentCore AI Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent-core
+Group=agent-core
+WorkingDirectory=/opt/agent-core
+EnvironmentFile=/opt/agent-core/.env
+ExecStart=/opt/agent-core/agent-core -config /opt/agent-core/agent-core.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGTERM
+StandardOutput=append:/opt/agent-core/logs/stdout.log
+StandardError=append:/opt/agent-core/logs/stderr.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/opt/agent-core/data /opt/agent-core/workspace /opt/agent-core/logs
+
+[Install]
+WantedBy=multi-user.target

@@ -24,3 +24,16 @@ Thumbs.db
 
 # Build output
 /dist/
+
+# Local credentials and runtime state
+.env
+.env.*
+!.env.example
+/data/
+/logs/
+/workspace/
+*.db
+*.db-shm
+*.db-wal
+/backups/
+.zcode/

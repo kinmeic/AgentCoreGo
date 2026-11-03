@@ -50,6 +50,25 @@ func CheckURL(rawURL string) error {
 	return nil
 }
 
+// CheckHTTPURL validates URL syntax without performing DNS or private-IP checks.
+// Callers must separately opt into private endpoints and still validate dial addresses.
+func CheckHTTPURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("only http/https protocols allowed")
+	}
+	if parsed.Hostname() == "" {
+		return fmt.Errorf("empty hostname")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("credentials must be supplied through headers, not URL userinfo")
+	}
+	return nil
+}
+
 var blockedHostnames = []string{
 	"metadata.google.internal",
 	"metadata.azure.com",
@@ -88,11 +107,11 @@ func IsBlockedIP(ip net.IP) bool {
 
 // blockedCIDRs are additional IP ranges to block beyond what net.IP catches.
 var blockedCIDRs = []string{
-	"169.254.0.0/16", // Link-local (AWS/GCP metadata)
-	"100.64.0.0/10",  // Carrier-grade NAT
-	"198.18.0.0/15",  // Benchmarking
-	"192.0.0.0/24",   // IETF protocol assignments
-	"192.0.2.0/24",   // TEST-NET-1
+	"169.254.0.0/16",  // Link-local (AWS/GCP metadata)
+	"100.64.0.0/10",   // Carrier-grade NAT
+	"198.18.0.0/15",   // Benchmarking
+	"192.0.0.0/24",    // IETF protocol assignments
+	"192.0.2.0/24",    // TEST-NET-1
 	"198.51.100.0/24", // TEST-NET-2
 	"203.0.113.0/24",  // TEST-NET-3
 }

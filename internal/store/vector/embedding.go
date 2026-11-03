@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+// Embedder is implemented by OpenAI-compatible and test embedding providers.
+type Embedder interface {
+	EmbedOne(ctx context.Context, text string) ([]float32, error)
+}
+
 // EmbeddingClient generates embeddings using an OpenAI-compatible API.
 type EmbeddingClient struct {
 	baseURL    string

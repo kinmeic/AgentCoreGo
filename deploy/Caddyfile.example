@@ -1,0 +1,16 @@
+example.com {
+    encode zstd gzip
+
+    handle_path /agent-core/* {
+        reverse_proxy http://127.0.0.1:8900 {
+            flush_interval -1
+        }
+    }
+
+    # Serve a separately managed frontend, if present.
+    handle {
+        root * /var/www/frontend
+        file_server
+        try_files {path} /index.html
+    }
+}

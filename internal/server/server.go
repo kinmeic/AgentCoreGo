@@ -10,23 +10,28 @@ import (
 	"agent-core/internal/store"
 	"agent-core/internal/tool"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Server is the HTTP server for Agent Core.
 type Server struct {
-	cfg           config.Config
-	orchestrator  *agent.Orchestrator
-	toolRegistry  *tool.Registry
-	mcpManager    *mcp.Manager
-	store         *store.SQLite
-	memService    *memory.Service
-	mux           *http.ServeMux
+	cfg          config.Config
+	orchestrator *agent.Orchestrator
+	toolRegistry *tool.Registry
+	mcpManager   *mcp.Manager
+	store        *store.SQLite
+	memService   *memory.Service
+	mux          *http.ServeMux
+	metrics      serverMetrics
+	handlerOnce  sync.Once
+	handler      http.Handler
 }
 
 // NewServer creates a new HTTP server.
@@ -60,6 +65,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/chat/{id}/stop", s.handleChatStop)
 	s.mux.HandleFunc("POST /v1/chat/{id}/clarify", s.handleChatClarify)
 
+	// Run management
+	s.mux.HandleFunc("GET /v1/runs/{id}", s.handleGetRun)
+	s.mux.HandleFunc("POST /v1/runs/{id}/stop", s.handleStopRun)
+	s.mux.HandleFunc("POST /v1/runs/{id}/resume", s.handleResumeRun)
+	s.mux.HandleFunc("GET /v1/runs/{id}/events", s.handleRunEvents)
+	s.mux.HandleFunc("GET /v1/approvals", s.handlePendingApprovals)
+	s.mux.HandleFunc("POST /v1/approvals/{id}", s.handleRespondApproval)
+
 	// Conversation management
 	s.mux.HandleFunc("GET /v1/conversations", s.handleListConversations)
 	s.mux.HandleFunc("GET /v1/conversations/{id}", s.handleGetConversation)
@@ -70,6 +83,8 @@ func (s *Server) registerRoutes() {
 	// Memory management
 	s.mux.HandleFunc("GET /v1/memories", s.handleListMemories)
 	s.mux.HandleFunc("POST /v1/memories", s.handleCreateMemory)
+	s.mux.HandleFunc("POST /v1/memories/consolidate", s.handleConsolidateMemories)
+	s.mux.HandleFunc("POST /v1/memories/rebuild", s.handleRebuildMemories)
 	s.mux.HandleFunc("PUT /v1/memories/{id}", s.handleUpdateMemory)
 	s.mux.HandleFunc("DELETE /v1/memories/{id}", s.handleDeleteMemory)
 
@@ -83,19 +98,27 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/mcp", s.handleConnectMCP)
 	s.mux.HandleFunc("DELETE /v1/mcp/{name}", s.handleDisconnectMCP)
 
-	// Health check
+	// Health and diagnostics
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.mux.HandleFunc("GET /ready", s.handleReady)
+	s.mux.HandleFunc("GET /v1/metrics", s.handleMetrics)
 }
 
 // Handler returns the HTTP handler with optional auth middleware.
 func (s *Server) Handler() http.Handler {
-	if s.cfg.Server.AuthToken != "" {
-		return s.authMiddleware(s.mux)
-	}
-	// No auth token configured — log a warning
-	log.Printf("[server] WARNING: AUTH_TOKEN is not set, API is running without authentication. "+
-		"This is only safe when bound to 127.0.0.1 (current: %s)", s.cfg.Server.Host)
-	return s.mux
+	s.handlerOnce.Do(func() {
+		var handler http.Handler = s.mux
+		handler = s.bodyLimitMiddleware(handler)
+		if s.cfg.Server.AuthToken != "" {
+			handler = s.authMiddleware(handler)
+		} else {
+			log.Printf("[server] WARNING: AUTH_TOKEN is not set; this is safe only on loopback (current %s)", s.cfg.Server.Host)
+		}
+		handler = s.rateLimitMiddleware(handler)
+		handler = s.corsMiddleware(handler)
+		s.handler = s.requestMiddleware(handler)
+	})
+	return s.handler
 }
 
 // authMiddleware validates the Authorization header.
@@ -113,8 +136,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		if !strings.HasPrefix(auth, "Bearer ") {
+			respondError(w, http.StatusUnauthorized, "authorization must use Bearer scheme")
+			return
+		}
 		token := strings.TrimPrefix(auth, "Bearer ")
-		if token != s.cfg.Server.AuthToken {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Server.AuthToken)) != 1 {
 			respondError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
@@ -139,8 +166,7 @@ func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.orchestrator.ChatSync(r.Context(), req)
 	if err != nil {
-		log.Printf("[server] Chat error: %v", err)
-		respondError(w, http.StatusInternalServerError, err.Error())
+		respondRunError(w, err)
 		return
 	}
 
@@ -159,27 +185,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sse, err := NewSSEWriter(w)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
-
-	events := make(chan model.StreamEvent, 32)
-	go s.orchestrator.ChatStream(r.Context(), req, events)
-
-	// Forward events to SSE
-	for event := range events {
-		if err := sse.WriteEvent(event); err != nil {
-			log.Printf("[server] SSE write error: %v", err)
-			// Drain remaining events to prevent producer goroutine from blocking
-			go func() {
-				for range events {
-				}
-			}()
-			return
-		}
-	}
+	runCtx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	events := make(chan model.StreamEvent, 64)
+	go s.orchestrator.ChatStream(runCtx, req, events)
+	s.serveEventStream(w, r, events)
 }
 
 func (s *Server) handleChatStop(w http.ResponseWriter, r *http.Request) {
@@ -244,15 +254,34 @@ func (s *Server) handleGetConversationLogs(w http.ResponseWriter, r *http.Reques
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-
-	logs, err := s.store.GetLogs(id, limit)
+	var logs []*model.ConversationLog
+	var err error
+	if query := r.URL.Query().Get("q"); query != "" {
+		logs, err = s.store.SearchLogs(id, query, limit)
+	} else if before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64); before > 0 {
+		logs, err = s.store.GetLogsBefore(id, before, limit)
+	} else {
+		logs, err = s.store.GetLogs(id, limit)
+	}
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		respondError(w, http.StatusInternalServerError, "failed to load conversation logs")
 		return
 	}
-
 	if logs == nil {
 		logs = []*model.ConversationLog{}
+	}
+	if len(logs) == limit && len(logs) > 0 {
+		w.Header().Set("X-Next-Cursor", strconv.FormatInt(logs[0].ID, 10))
+	}
+	if r.URL.Query().Get("format") == "jsonl" {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		encoder := json.NewEncoder(w)
+		for _, entry := range logs {
+			if err := encoder.Encode(entry); err != nil {
+				return
+			}
+		}
+		return
 	}
 	respondJSON(w, http.StatusOK, logs)
 }
@@ -418,20 +447,22 @@ func (s *Server) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListTools(w http.ResponseWriter, r *http.Request) {
 	type toolInfo struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Source      string `json:"source"`
-		Origin      string `json:"origin"`
+		Name         string            `json:"name"`
+		Description  string            `json:"description"`
+		Source       string            `json:"source"`
+		Origin       string            `json:"origin"`
+		Capabilities tool.Capabilities `json:"capabilities"`
 	}
 
 	tools := s.toolRegistry.List()
 	result := make([]toolInfo, len(tools))
 	for i, t := range tools {
 		result[i] = toolInfo{
-			Name:        t.Provider.Name(),
-			Description: t.Provider.Description(),
-			Source:      string(t.Source),
-			Origin:      t.Origin,
+			Name:         t.Provider.Name(),
+			Description:  t.Provider.Description(),
+			Source:       string(t.Source),
+			Origin:       t.Origin,
+			Capabilities: t.Capabilities,
 		}
 	}
 
@@ -444,28 +475,50 @@ func (s *Server) handleRegisterTool(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
-	if reg.Name == "" || reg.CallbackURL == "" {
-		respondError(w, http.StatusBadRequest, "name and callback_url are required")
+	if !validToolName(reg.Name) || reg.CallbackURL == "" || len(reg.CallbackURL) > 2048 {
+		respondError(w, http.StatusBadRequest, "valid name and callback_url are required")
 		return
 	}
-
-	// Validate callback URL against SSRF rules
-	if err := security.CheckURL(reg.CallbackURL); err != nil {
-		respondError(w, http.StatusBadRequest, "callback_url blocked: "+err.Error())
+	if reg.Secret == "" {
+		respondError(w, http.StatusBadRequest, "secret is required for callback authentication")
 		return
 	}
-
-	provider := tool.NewHostCallback(reg.Name, reg.Description, reg.Schema, reg.CallbackURL)
-	s.toolRegistry.Register(provider, tool.SourceHostCallback, "host")
-
-	log.Printf("[server] Registered host tool: %s -> %s", reg.Name, reg.CallbackURL)
+	var urlErr error
+	if reg.AllowPrivate {
+		urlErr = security.CheckHTTPURL(reg.CallbackURL)
+	} else {
+		urlErr = security.CheckURL(reg.CallbackURL)
+	}
+	if urlErr != nil {
+		respondError(w, http.StatusBadRequest, "callback_url blocked")
+		return
+	}
+	provider := tool.NewHostCallbackWithOptions(reg)
+	if err := s.toolRegistry.Register(provider, tool.SourceHostCallback, "host"); err != nil {
+		respondError(w, http.StatusConflict, err.Error())
+		return
+	}
+	schema, _ := json.Marshal(reg.Schema)
+	if err := s.store.SaveHostCallback(&model.HostCallback{Name: reg.Name, Description: reg.Description,
+		Schema: schema, CallbackURL: reg.CallbackURL, Secret: reg.Secret, AllowPrivate: reg.AllowPrivate, Enabled: true}); err != nil {
+		_ = s.toolRegistry.Unregister(reg.Name)
+		respondError(w, http.StatusInternalServerError, "failed to persist host callback")
+		return
+	}
+	log.Printf("[server] registered host tool %s", reg.Name)
 	respondJSON(w, http.StatusCreated, map[string]string{"status": "registered", "name": reg.Name})
 }
 
 func (s *Server) handleUnregisterTool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	s.toolRegistry.Unregister(name)
+	if err := s.store.DeleteHostCallback(name); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to delete host callback configuration")
+		return
+	}
+	if err := s.toolRegistry.Unregister(name); err != nil {
+		respondError(w, http.StatusConflict, err.Error())
+		return
+	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "unregistered", "name": name})
 }
 
@@ -497,14 +550,13 @@ func (s *Server) handleConnectMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save to DB
-	configJSON, _ := json.Marshal(cfg)
-	s.store.SaveMCPServer(&model.MCPServer{
-		Name:      cfg.Name,
-		Transport: cfg.Transport,
-		Config:    string(configJSON),
-		Enabled:   true,
-	})
+	// Persist only the transport-specific config, not a nested ServerConfig envelope.
+	if err := s.store.SaveMCPServer(&model.MCPServer{Name: cfg.Name, Transport: cfg.Transport,
+		Config: string(cfg.Config), Enabled: true}); err != nil {
+		_ = s.mcpManager.Disconnect(cfg.Name)
+		respondError(w, http.StatusInternalServerError, "failed to persist MCP configuration")
+		return
+	}
 
 	respondJSON(w, http.StatusCreated, map[string]string{"status": "connected", "name": cfg.Name})
 }
@@ -517,7 +569,10 @@ func (s *Server) handleDisconnectMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.store.DeleteMCPServer(name)
+	if err := s.store.DeleteMCPServer(name); err != nil {
+		respondError(w, http.StatusInternalServerError, "disconnected but failed to delete persisted MCP configuration")
+		return
+	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "disconnected", "name": name})
 }
 

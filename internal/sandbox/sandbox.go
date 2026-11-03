@@ -7,72 +7,68 @@ import (
 	"strings"
 )
 
-// ValidatePath validates that the requested path is within the workspace directory.
-// It resolves relative paths, cleans the result, and checks for symlink escapes.
-// For write operations where the target file may not exist, pass forWrite=true.
+// ValidatePath validates paths and resolves every existing ancestor, including
+// ancestors of directories that still need to be created.
 func ValidatePath(requestedPath, workspaceDir string, forWrite bool) (string, error) {
-	// Resolve the path
-	var resolved string
-	if filepath.IsAbs(requestedPath) {
-		resolved = filepath.Clean(requestedPath)
-	} else {
-		resolved = filepath.Clean(filepath.Join(workspaceDir, requestedPath))
+	resolved := requestedPath
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(workspaceDir, resolved)
 	}
-
-	// Ensure workspace itself is resolved
+	resolved = filepath.Clean(resolved)
 	evalWorkspace, err := filepath.EvalSymlinks(workspaceDir)
 	if err != nil {
-		evalWorkspace = workspaceDir
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve workspace: %w", err)
+		}
+		evalWorkspace = filepath.Clean(workspaceDir)
 	}
 
-	// For write operations, the target file may not exist yet.
-	// Validate the parent directory and check if the target is a symlink.
 	if forWrite {
-		parent := filepath.Dir(resolved)
-		evaluatedParent, err := filepath.EvalSymlinks(parent)
+		parent, err := resolveExistingAncestor(filepath.Dir(resolved))
 		if err != nil {
-			// Parent doesn't exist - will be created, validate what we can
-			evaluatedParent = parent
+			return "", fmt.Errorf("resolve parent: %w", err)
 		}
-
-		// Check if the target file already exists and is a symlink
-		// This prevents writing through symlinks that point outside the workspace
-		targetPath := filepath.Join(evaluatedParent, filepath.Base(resolved))
-		if info, err := os.Lstat(targetPath); err == nil {
-			// File exists — check if it's a symlink
-			if info.Mode()&os.ModeSymlink != 0 {
-				// It's a symlink — resolve it and validate the target
-				symlinkTarget, err := filepath.EvalSymlinks(targetPath)
-				if err != nil {
-					return "", fmt.Errorf("failed to resolve symlink %q: %w", requestedPath, err)
-				}
-				// Check if the symlink target is within workspace
-				if !isInsideWorkspace(symlinkTarget, evalWorkspace) {
-					return "", fmt.Errorf("path %q is a symlink pointing outside the workspace directory", requestedPath)
-				}
-				// Symlink points inside workspace — use the resolved target
-				resolved = symlinkTarget
-			} else {
-				resolved = targetPath
+		resolved = filepath.Join(parent, filepath.Base(resolved))
+		if info, err := os.Lstat(resolved); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(resolved)
+			if err != nil {
+				return "", fmt.Errorf("resolve target symlink: %w", err)
 			}
-		} else {
-			resolved = targetPath
+			resolved = target
 		}
 	} else {
-		// For read/list, the file should exist - resolve symlinks
-		evaluated, err := filepath.EvalSymlinks(resolved)
-		if err == nil {
-			resolved = evaluated
+		resolved, err = resolveExistingAncestor(resolved)
+		if err != nil {
+			return "", fmt.Errorf("resolve path: %w", err)
 		}
-		// If EvalSymlinks fails (file doesn't exist), use the cleaned path
 	}
-
-	// Check that resolved path is within workspace
 	if !isInsideWorkspace(resolved, evalWorkspace) {
 		return "", fmt.Errorf("path %q is outside the workspace directory", requestedPath)
 	}
-
 	return resolved, nil
+}
+
+func resolveExistingAncestor(path string) (string, error) {
+	current := filepath.Clean(path)
+	var missing []string
+	for {
+		evaluated, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				evaluated = filepath.Join(evaluated, missing[i])
+			}
+			return evaluated, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }
 
 // ValidateWorkingDir validates that the requested working directory is within the workspace.
@@ -110,7 +106,10 @@ func EnsureWorkspace(dir string) error {
 
 // EnsureSoulFile creates a default SOUL.md if it doesn't exist.
 func EnsureSoulFile(workspaceDir, soulFileName string) error {
-	path := filepath.Join(workspaceDir, soulFileName)
+	path, err := ValidatePath(soulFileName, workspaceDir, true)
+	if err != nil {
+		return err
+	}
 	if _, err := os.Stat(path); err == nil {
 		return nil // Already exists
 	}
@@ -122,7 +121,10 @@ func EnsureSoulFile(workspaceDir, soulFileName string) error {
 // Returns empty string if file doesn't exist (graceful degradation).
 // Content is truncated to maxSoulSize characters.
 func ReadSoulFile(workspaceDir, soulFileName string) (string, error) {
-	path := filepath.Join(workspaceDir, soulFileName)
+	path, err := ValidatePath(soulFileName, workspaceDir, false)
+	if err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

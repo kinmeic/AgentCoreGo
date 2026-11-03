@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Role constants for messages
 const (
@@ -62,8 +65,16 @@ type FuncDef struct {
 
 // StreamEvent represents a server-sent event during streaming.
 type StreamEvent struct {
+	SchemaVersion  int        `json:"schema_version,omitempty"`
+	EventID        string     `json:"event_id,omitempty"`
+	Sequence       uint64     `json:"sequence,omitempty"`
+	RunID          string     `json:"run_id,omitempty"`
+	ToolCallID     string     `json:"tool_call_id,omitempty"`
+	RequestID      string     `json:"request_id,omitempty"`
+	Timestamp      time.Time  `json:"timestamp,omitempty"`
+	ErrorCode      string     `json:"error_code,omitempty"`
 	Type           string     `json:"type"`
-	ConversationID string    `json:"conversation_id,omitempty"`
+	ConversationID string     `json:"conversation_id,omitempty"`
 	Content        string     `json:"content,omitempty"`
 	Tools          []string   `json:"tools,omitempty"`
 	ToolName       string     `json:"tool,omitempty"`
@@ -84,9 +95,11 @@ type StreamEvent struct {
 
 // Action represents a recorded tool action taken during the conversation.
 type Action struct {
-	Tool   string `json:"tool"`
-	Status string `json:"status"`
-	Result string `json:"result,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	Tool       string `json:"tool"`
+	Status     string `json:"status"`
+	Result     string `json:"result,omitempty"`
 }
 
 // UsageInfo tracks token usage for a conversation turn.
@@ -107,11 +120,54 @@ type ChatRequest struct {
 // ChatResponse represents a synchronous chat response.
 type ChatResponse struct {
 	ConversationID string     `json:"conversation_id"`
+	RunID          string     `json:"run_id,omitempty"`
+	Status         RunStatus  `json:"status,omitempty"`
 	Reply          string     `json:"reply"`
 	Intent         string     `json:"intent"`
 	Actions        []Action   `json:"actions"`
 	Usage          *UsageInfo `json:"usage,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
+}
+
+// RunStatus is the persisted lifecycle state of one agent execution.
+type RunStatus string
+
+const (
+	RunStatusPending         RunStatus = "pending"
+	RunStatusRunning         RunStatus = "running"
+	RunStatusWaitingClarify  RunStatus = "waiting_clarification"
+	RunStatusWaitingApproval RunStatus = "waiting_approval"
+	RunStatusCompleted       RunStatus = "completed"
+	RunStatusFailed          RunStatus = "failed"
+	RunStatusCancelled       RunStatus = "cancelled"
+)
+
+// Run is the durable execution record used by stop, resume and diagnostics APIs.
+type Run struct {
+	ID             string            `json:"id"`
+	ConversationID string            `json:"conversation_id"`
+	Status         RunStatus         `json:"status"`
+	Input          string            `json:"input"`
+	Source         string            `json:"source,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	Iteration      int               `json:"iteration"`
+	Reply          string            `json:"reply,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	Usage          *UsageInfo        `json:"usage,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
+}
+
+// RunEvent is the durable form of a stream event.
+type RunEvent struct {
+	EventID        string          `json:"event_id"`
+	RunID          string          `json:"run_id"`
+	ConversationID string          `json:"conversation_id"`
+	Sequence       uint64          `json:"sequence"`
+	Type           string          `json:"type"`
+	Payload        json.RawMessage `json:"payload"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 
 // Conversation represents a conversation with metadata.
@@ -127,16 +183,20 @@ type Conversation struct {
 
 // ConversationLog represents a single log entry in a conversation.
 type ConversationLog struct {
-	ID               int64     `json:"id"`
-	ConversationID   string    `json:"conversation_id"`
-	Role             string    `json:"role"`
-	Content          string    `json:"content"`
-	Intent           string    `json:"intent,omitempty"`
-	Actions          []Action  `json:"actions,omitempty"`
-	PromptTokens     int       `json:"prompt_tokens,omitempty"`
-	CompletionTokens int       `json:"completion_tokens,omitempty"`
-	ContextTokens    int       `json:"context_tokens,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID               int64      `json:"id"`
+	ConversationID   string     `json:"conversation_id"`
+	RunID            string     `json:"run_id,omitempty"`
+	Role             string     `json:"role"`
+	Content          string     `json:"content"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	Status           string     `json:"status,omitempty"`
+	Intent           string     `json:"intent,omitempty"`
+	Actions          []Action   `json:"actions,omitempty"`
+	PromptTokens     int        `json:"prompt_tokens,omitempty"`
+	CompletionTokens int        `json:"completion_tokens,omitempty"`
+	ContextTokens    int        `json:"context_tokens,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
 }
 
 // Memory represents an agent memory entry.
@@ -158,4 +218,17 @@ type MCPServer struct {
 	Transport string `json:"transport"`
 	Config    string `json:"config"`
 	Enabled   bool   `json:"enabled"`
+}
+
+// HostCallback is the durable configuration for a host-provided tool.
+type HostCallback struct {
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	Schema       json.RawMessage `json:"schema"`
+	CallbackURL  string          `json:"callback_url"`
+	Secret       string          `json:"secret,omitempty"`
+	AllowPrivate bool            `json:"allow_private"`
+	Enabled      bool            `json:"enabled"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
