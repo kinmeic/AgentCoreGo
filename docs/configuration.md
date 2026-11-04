@@ -57,7 +57,7 @@ llm:
   max_output_tokens: 32000
   reasoning_effort: ""
   expose_reasoning: true
-  thinking_type: disabled
+  thinking_type: auto
   thinking_budget_tokens: 16000
   fallbacks: []
 ```
@@ -90,7 +90,7 @@ llm:
 
 客户端调用 `/v1/messages`，使用 `x-api-key`、`anthropic-version: 2023-06-01`。支持文本、工具调用/结果和 SSE；省略 temperature；不支持图像/PDF、server tools、prompt cache 写入策略。跨源重定向拒绝转发密钥。fallback 可各用不同协议，继承超时、重试、输出和思考公开配置，Anthropic 专属 provider state 不会写入 OpenAI 请求。
 
-`thinking_type` 默认 `disabled`。`enabled` 使用 manual thinking，并要求 `thinking_budget_tokens` 至少 1024 且小于 `max_output_tokens`；配合客户端工具时会携带 interleaved-thinking beta header。支持 adaptive thinking 的模型使用 `adaptive`，不发送 budget，可用 `reasoning_effort` 控制深度。具体模式取决于实际模型或网关能力。
+`thinking_type` 默认 `auto`，此时不发送 `thinking` 字段，交由模型或网关决定是否思考；这对默认开启思考的 Anthropic 兼容模型很重要。`disabled` 会显式关闭思考。`enabled` 使用 manual thinking，并要求 `thinking_budget_tokens` 至少 1024 且小于 `max_output_tokens`；配合客户端工具时会携带 interleaved-thinking beta header。支持 adaptive thinking 的模型使用 `adaptive`，不发送 budget，可用 `reasoning_effort` 控制深度。具体模式取决于实际模型或网关能力。
 
 `expose_reasoning` 默认 `true`。OpenAI `reasoning_content`、Anthropic thinking delta 和文本内嵌 `<think>` 正文通过独立 `reasoning` SSE/WS 事件输出，并进入 run events 以供 replay；不会混入 `chunk`、`done.reply` 或同步 `/v1/chat` 的回答。设为 `false` 可恢复不公开正文的行为。Anthropic signature 与 redacted data 仅保存在内部 provider state 用于后续请求和 checkpoint，不在公开事件或会话日志 JSON 中返回。已持久化的 reasoning 事件不会因之后关闭开关而自动删除。
 

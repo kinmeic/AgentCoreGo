@@ -4,10 +4,18 @@ import "testing"
 
 func TestThinkingConfigurationDefaultsAndValidation(t *testing.T) {
 	cfg := DefaultConfig().LLM
-	if !cfg.ExposeReasoning || cfg.ThinkingType != ThinkingTypeDisabled || cfg.ThinkingBudgetTokens != 16000 {
+	if !cfg.ExposeReasoning || cfg.ThinkingType != ThinkingTypeAuto || cfg.ThinkingBudgetTokens != 16000 {
 		t.Fatalf("unexpected reasoning defaults: %#v", cfg)
 	}
 	cfg.MaxOutputTokens = 32000
+	cfg.ThinkingType = ""
+	if err := ValidateThinking(cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ThinkingType = ThinkingTypeAuto
+	if err := ValidateThinking(cfg); err != nil {
+		t.Fatal(err)
+	}
 	cfg.ThinkingType = ThinkingTypeEnabled
 	if err := ValidateThinking(cfg); err != nil {
 		t.Fatal(err)

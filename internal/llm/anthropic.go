@@ -113,7 +113,7 @@ type anthropicRequest struct {
 	Messages     []anthropicMessage `json:"messages"`
 	Tools        []anthropicTool    `json:"tools,omitempty"`
 	Stream       bool               `json:"stream"`
-	Thinking     *anthropicThinking `json:"thinking"`
+	Thinking     *anthropicThinking `json:"thinking,omitempty"`
 	OutputConfig map[string]string  `json:"output_config,omitempty"`
 }
 
@@ -138,7 +138,7 @@ func responseToolInput(raw json.RawMessage) (json.RawMessage, error) {
 func (c *Client) newAnthropicRequest(messages []model.Message, tools []model.ToolDefinition, stream bool) (anthropicRequest, error) {
 	thinkingType := c.cfg.ThinkingType
 	if thinkingType == "" {
-		thinkingType = config.ThinkingTypeDisabled
+		thinkingType = config.ThinkingTypeAuto
 	}
 	request := anthropicRequest{Model: c.cfg.Model, MaxTokens: c.cfg.MaxOutputTokens, Stream: stream,
 		Messages: []anthropicMessage{}}
@@ -148,9 +148,11 @@ func (c *Client) newAnthropicRequest(messages []model.Message, tools []model.Too
 	if err := config.ValidateThinking(c.cfg); err != nil {
 		return request, err
 	}
-	request.Thinking = &anthropicThinking{Type: thinkingType}
-	if thinkingType == config.ThinkingTypeEnabled {
-		request.Thinking.BudgetTokens = c.cfg.ThinkingBudgetTokens
+	if thinkingType != config.ThinkingTypeAuto {
+		request.Thinking = &anthropicThinking{Type: thinkingType}
+		if thinkingType == config.ThinkingTypeEnabled {
+			request.Thinking.BudgetTokens = c.cfg.ThinkingBudgetTokens
+		}
 	}
 	if c.cfg.ReasoningEffort != "" {
 		request.OutputConfig = map[string]string{"effort": c.cfg.ReasoningEffort}

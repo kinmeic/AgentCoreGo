@@ -19,7 +19,7 @@ llm:
   max_output_tokens: 32000 # Set actual model capability.
   reasoning_effort: ""
   expose_reasoning: true
-  thinking_type: disabled
+  thinking_type: auto
   thinking_budget_tokens: 16000
   fallbacks: []
 

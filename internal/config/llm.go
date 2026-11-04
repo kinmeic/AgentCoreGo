@@ -9,6 +9,7 @@ const (
 	ThinkingTypeDisabled = "disabled"
 	ThinkingTypeEnabled  = "enabled"
 	ThinkingTypeAdaptive = "adaptive"
+	ThinkingTypeAuto     = "auto" // Omit thinking and use the provider's default.
 )
 
 // An omitted format preserves compatibility with existing OpenAI configurations.
@@ -24,10 +25,10 @@ func ValidateAPIFormat(format string) error {
 func ValidateThinking(c LLMConfig) error {
 	typeName := c.ThinkingType
 	if typeName == "" {
-		typeName = ThinkingTypeDisabled
+		typeName = ThinkingTypeAuto
 	}
 	switch typeName {
-	case ThinkingTypeDisabled, ThinkingTypeAdaptive:
+	case ThinkingTypeAuto, ThinkingTypeDisabled, ThinkingTypeAdaptive:
 		return nil
 	case ThinkingTypeEnabled:
 		if c.ThinkingBudgetTokens < 1024 {
@@ -38,7 +39,7 @@ func ValidateThinking(c LLMConfig) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("thinking type must be disabled, enabled, or adaptive, got %q", typeName)
+		return fmt.Errorf("thinking type must be auto, disabled, enabled, or adaptive, got %q", typeName)
 	}
 }
 

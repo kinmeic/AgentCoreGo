@@ -29,10 +29,18 @@ func TestOpenAIStreamExposesReasoningSeparately(t *testing.T) {
 func TestAnthropicThinkingRequestModes(t *testing.T) {
 	cfg := anthropicTestConfig("https://example.test")
 	cfg.MaxOutputTokens = 32000
-	cfg.ThinkingType = config.ThinkingTypeEnabled
-	cfg.ThinkingBudgetTokens = 16000
 	client := NewClient(cfg)
 	messages := []model.Message{{Role: model.RoleUser, Content: "hello"}}
+	defaultRequest, err := client.newAnthropicRequest(messages, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultRequest.Thinking != nil {
+		t.Fatal("provider-default thinking was not omitted")
+	}
+	cfg.ThinkingType = config.ThinkingTypeEnabled
+	cfg.ThinkingBudgetTokens = 16000
+	client = NewClient(cfg)
 	request, err := client.newAnthropicRequest(messages, nil, true)
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +66,50 @@ func TestAnthropicThinkingRequestModes(t *testing.T) {
 	client = NewClient(cfg)
 	if _, err := client.newAnthropicRequest(messages, nil, true); err == nil {
 		t.Fatal("accepted an undersized manual thinking budget")
+	}
+}
+
+func TestAnthropicProviderDefaultStreamsThinkingWithoutExplicitThinkingRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/apps/anthropic/v1/messages" {
+			t.Errorf("unexpected endpoint: %s", r.URL.Path)
+		}
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		if _, exists := body["thinking"]; exists {
+			t.Error("provider-default request must omit thinking")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			anthropicEvent("message_start", map[string]any{"message": map[string]any{"type": "message", "role": "assistant"}})+
+				anthropicEvent("content_block_start", map[string]any{"index": 0, "content_block": map[string]any{"type": "thinking", "thinking": ""}})+
+				anthropicEvent("content_block_delta", map[string]any{"index": 0, "delta": map[string]any{"type": "thinking_delta", "thinking": "分析"}})+
+				anthropicEvent("content_block_stop", map[string]any{"index": 0})+
+				anthropicEvent("content_block_start", map[string]any{"index": 1, "content_block": map[string]any{"type": "text", "text": "答案"}})+
+				anthropicEvent("content_block_stop", map[string]any{"index": 1})+
+				anthropicEvent("message_delta", map[string]any{"delta": map[string]any{"stop_reason": "end_turn"}})+
+				anthropicEvent("message_stop", nil))
+	}))
+	defer server.Close()
+	cfg := anthropicTestConfig(server.URL + "/apps/anthropic")
+	cfg.Model = "deepseek-v4.1-flash-1017"
+	chunks, err := NewClient(cfg).CompleteStream(context.Background(), []model.Message{{Role: model.RoleUser, Content: "你好"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasoning, answer string
+	for chunk := range chunks {
+		if chunk.Err != nil {
+			t.Fatal(chunk.Err)
+		}
+		reasoning += chunk.Reasoning
+		answer += chunk.Content
+	}
+	if reasoning != "分析" || answer != "答案" {
+		t.Fatalf("thinking/content mismatch: %q %q", reasoning, answer)
 	}
 }
 
@@ -106,7 +158,9 @@ func TestAnthropicDisabledThinkingStripsThinkingBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := NewClient(anthropicTestConfig("https://example.test"))
+	cfg := anthropicTestConfig("https://example.test")
+	cfg.ThinkingType = config.ThinkingTypeDisabled
+	client := NewClient(cfg)
 	request, err := client.newAnthropicRequest([]model.Message{
 		{Role: model.RoleUser, Content: "question"},
 		{Role: model.RoleAssistant, ProviderState: state},

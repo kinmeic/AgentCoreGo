@@ -180,7 +180,7 @@ func DefaultConfig() Config {
 			RateLimitPerMinute: 300, MaxConcurrentRuns: 10, LogFormat: "text", TerminalEnabled: true},
 		LLM: LLMConfig{APIFormat: "openai", BaseURL: "https://api.openai.com/v1", Model: "", ContextWindow: DefaultContextWindow,
 			MaxRetries: DefaultModelRetries, MaxOutputTokens: DefaultOutputTokens, ExposeReasoning: true,
-			ThinkingType: ThinkingTypeDisabled, ThinkingBudgetTokens: 16000,
+			ThinkingType: ThinkingTypeAuto, ThinkingBudgetTokens: 16000,
 			RequestTimeoutMs: DefaultNetworkTimeoutMs, StreamIdleTimeoutMs: DefaultModelStreamIdleTimeoutMs,
 			RetryBaseDelayMs: 2000, RetryBackoffFactor: 2, RetryMaxDelayMs: 60000, RetryJitter: true},
 		Store:       StoreConfig{DBPath: "./data/agent.db"},
