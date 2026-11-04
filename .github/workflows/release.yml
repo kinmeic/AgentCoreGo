@@ -119,7 +119,7 @@ jobs:
         if: matrix.openwrt_arch != ''
         run: |
           sudo apt-get update
-          sudo apt-get install -y zstd qemu-user
+          sudo apt-get install -y zstd qemu-user libncurses-dev
       - name: Download and verify OpenWrt SDK
         if: matrix.openwrt_arch != ''
         shell: bash
@@ -139,8 +139,7 @@ jobs:
           test -n "$cc" && test -x "$cc"
           {
             echo "OPENWRT_SDK=$sdk"
-            echo "CC=$cc"
-            echo "STAGING_DIR=$sdk/staging_dir"
+            echo "OPENWRT_CC=$cc"
           } >> "$GITHUB_ENV"
       - name: Build executable with SQLite
         shell: bash
@@ -148,6 +147,9 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
+          if [[ -n "${OPENWRT_CC:-}" ]]; then
+            export CC="$OPENWRT_CC" STAGING_DIR="$OPENWRT_SDK/staging_dir"
+          fi
           mkdir -p build
           ldflags="-s -w -X agent-core/internal/version.Version=${RELEASE_TAG#v}"
           binary=build/agent-core
