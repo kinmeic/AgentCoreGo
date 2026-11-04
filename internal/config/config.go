@@ -4,6 +4,7 @@ import (
 	"agent-core/internal/security"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,148 +15,180 @@ import (
 )
 
 type Config struct {
-	Server      ServerConfig      `yaml:"server"`
-	LLM         LLMConfig         `yaml:"llm"`
-	Embedding   EmbeddingConfig   `yaml:"embedding"`
-	Store       StoreConfig       `yaml:"store"`
-	Workspace   WorkspaceConfig   `yaml:"workspace"`
-	Compression CompressionConfig `yaml:"compression"`
-	Tools       ToolsConfig       `yaml:"tools"`
-	Memory      MemoryConfig      `yaml:"memory"`
-	Security    SecurityConfig    `yaml:"security"`
-	Features    FeatureConfig     `yaml:"features"`
-	UI          UIConfig          `yaml:"ui"`
-	Skills      SkillsConfig      `yaml:"skills"`
-	Commands    CommandsConfig    `yaml:"commands"`
-	Workflow    WorkflowConfig    `yaml:"workflow"`
-	Telemetry   TelemetryConfig   `yaml:"telemetry"`
+	ModelStream       ModelStreamConfig        `yaml:"modelStream" json:"modelStream"`
+	Permission        PermissionConfig         `yaml:"permission" json:"permission"`
+	Storage           StorageConfig            `yaml:"storage" json:"storage"`
+	Network           NetworkConfig            `yaml:"network" json:"network"`
+	Logging           LoggingConfig            `yaml:"logging" json:"logging"`
+	ToolConcurrency   ToolConcurrencyConfig    `yaml:"toolConcurrency" json:"toolConcurrency"`
+	ModelAnomalyGuard ModelAnomalyGuardConfig  `yaml:"modelAnomalyGuard" json:"modelAnomalyGuard"`
+	MCP               MCPConfig                `yaml:"mcp" json:"mcp"`
+	SkillOverrides    map[string]EntryOverride `yaml:"skill" json:"skill"`
+	CommandOverrides  map[string]EntryOverride `yaml:"command" json:"command"`
+	Server            ServerConfig             `yaml:"server" json:"server"`
+	LLM               LLMConfig                `yaml:"llm" json:"llm"`
+	Store             StoreConfig              `yaml:"-" json:"-"`
+	Workspace         WorkspaceConfig          `yaml:"workspace" json:"workspace"`
+	Compression       CompressionConfig        `yaml:"-" json:"-"`
+	Tools             ToolsConfig              `yaml:"-" json:"-"`
+	Memory            MemoryConfig             `yaml:"memory" json:"memory"`
+	Security          SecurityConfig           `yaml:"-" json:"-"`
+	Features          FeatureConfig            `yaml:"features" json:"features"`
+	UI                UIConfig                 `yaml:"ui" json:"ui"`
+	Skills            SkillsConfig             `yaml:"skills" json:"skills"`
+	Commands          CommandsConfig           `yaml:"-" json:"-"`
+	Workflow          WorkflowConfig           `yaml:"-" json:"-"`
+	Telemetry         TelemetryConfig          `yaml:"-" json:"-"`
 }
 
 type WorkspaceConfig struct {
-	Path     string `yaml:"path"`
-	SoulFile string `yaml:"soul_file"`
+	Path     string `yaml:"path" json:"path"`
+	SoulFile string `yaml:"-" json:"-"`
 }
 type ServerConfig struct {
-	Host               string   `yaml:"host"`
-	Port               int      `yaml:"port"`
-	AuthToken          string   `yaml:"auth_token"`
-	MaxRequestBytes    int64    `yaml:"max_request_bytes"`
-	CORSOrigins        []string `yaml:"cors_origins"`
-	RateLimitPerMinute int      `yaml:"rate_limit_per_minute"`
-	MaxConcurrentRuns  int      `yaml:"max_concurrent_runs"`
-	LogFormat          string   `yaml:"log_format"`
+	Host               string   `yaml:"host" json:"host"`
+	Port               int      `yaml:"port" json:"port"`
+	AuthToken          string   `yaml:"auth_token" json:"auth_token"`
+	MaxRequestBytes    int64    `yaml:"max_request_bytes" json:"max_request_bytes"`
+	CORSOrigins        []string `yaml:"cors_origins" json:"cors_origins"`
+	RateLimitPerMinute int      `yaml:"rate_limit_per_minute" json:"rate_limit_per_minute"`
+	MaxConcurrentRuns  int      `yaml:"max_concurrent_runs" json:"max_concurrent_runs"`
+	LogFormat          string   `yaml:"-" json:"-"`
+	TerminalEnabled    bool     `yaml:"terminalEnabled" json:"terminalEnabled"`
 }
 type LLMConfig struct {
-	APIFormat         string             `yaml:"api_format"`
-	BaseURL           string             `yaml:"base_url"`
-	APIKey            string             `yaml:"api_key"`
-	Model             string             `yaml:"model"`
-	ContextWindow     int                `yaml:"context_window"`
-	MaxToolIterations int                `yaml:"max_tool_iterations"`
-	MaxRetries        int                `yaml:"max_retries"`
-	Temperature       float64            `yaml:"temperature"`
-	MaxOutputTokens   int                `yaml:"max_output_tokens"`
-	MaxRunTokens      int                `yaml:"max_run_tokens"`
-	RunTimeoutSeconds int                `yaml:"run_timeout_seconds"`
-	ReasoningEffort   string             `yaml:"reasoning_effort"`
-	Fallbacks         []FallbackProvider `yaml:"fallbacks"`
+	RequestTimeoutMs    int                `yaml:"-" json:"-"`
+	StreamIdleTimeoutMs int                `yaml:"-" json:"-"`
+	RetryBaseDelayMs    int                `yaml:"-" json:"-"`
+	RetryMaxDelayMs     int                `yaml:"-" json:"-"`
+	RetryBackoffFactor  float64            `yaml:"-" json:"-"`
+	HTTPProxy           string             `yaml:"-" json:"-"`
+	NoProxy             string             `yaml:"-" json:"-"`
+	CACertFile          string             `yaml:"-" json:"-"`
+	RetryJitter         bool               `yaml:"-" json:"-"`
+	APIFormat           string             `yaml:"api_format" json:"api_format"`
+	BaseURL             string             `yaml:"base_url" json:"base_url"`
+	APIKey              string             `yaml:"api_key" json:"api_key"`
+	Model               string             `yaml:"model" json:"model"`
+	ContextWindow       int                `yaml:"context_window" json:"context_window"`
+	MaxToolIterations   int                `yaml:"-" json:"-"`
+	MaxRetries          int                `yaml:"-" json:"-"`
+	Temperature         float64            `yaml:"-" json:"-"`
+	MaxOutputTokens     int                `yaml:"max_output_tokens" json:"max_output_tokens"`
+	MaxRunTokens        int                `yaml:"-" json:"-"`
+	RunTimeoutSeconds   int                `yaml:"-" json:"-"`
+	ReasoningEffort     string             `yaml:"reasoning_effort" json:"reasoning_effort"`
+	Fallbacks           []FallbackProvider `yaml:"fallbacks" json:"fallbacks"`
 }
 type FallbackProvider struct {
-	Name          string  `yaml:"name"`
-	APIFormat     string  `yaml:"api_format"`
-	BaseURL       string  `yaml:"base_url"`
-	APIKey        string  `yaml:"api_key"`
-	Model         string  `yaml:"model"`
-	ContextWindow int     `yaml:"context_window"`
-	Temperature   float64 `yaml:"temperature"`
-}
-type EmbeddingConfig struct {
-	BaseURL    string `yaml:"base_url"`
-	APIKey     string `yaml:"api_key"`
-	Model      string `yaml:"model"`
-	Dimensions int    `yaml:"dimensions"`
+	Name          string  `yaml:"name" json:"name"`
+	APIFormat     string  `yaml:"api_format" json:"api_format"`
+	BaseURL       string  `yaml:"base_url" json:"base_url"`
+	APIKey        string  `yaml:"api_key" json:"api_key"`
+	Model         string  `yaml:"model" json:"model"`
+	ContextWindow int     `yaml:"context_window" json:"context_window"`
+	Temperature   float64 `yaml:"-" json:"-"`
 }
 type StoreConfig struct {
-	DBPath        string `yaml:"db_path"`
-	VectorBackend string `yaml:"vector_backend"`
+	DBPath string `yaml:"db_path" json:"db_path"`
 }
 type CompressionConfig struct {
-	ThresholdPercent float64 `yaml:"threshold_percent"`
-	ProtectFirstN    int     `yaml:"protect_first_n"`
-	ProtectLastN     int     `yaml:"protect_last_n"`
-	TargetRatio      float64 `yaml:"target_ratio"`
+	MaxOutputTokens  int     `yaml:"-" json:"-"`
+	ThresholdPercent float64 `yaml:"threshold_percent" json:"threshold_percent"`
+	ProtectFirstN    int     `yaml:"protect_first_n" json:"protect_first_n"`
+	ProtectLastN     int     `yaml:"protect_last_n" json:"protect_last_n"`
+	TargetRatio      float64 `yaml:"target_ratio" json:"target_ratio"`
 }
 type ToolsConfig struct {
-	WorkDir             string   `yaml:"work_dir"`
-	ApprovalMode        string   `yaml:"approval_mode"`
-	TerminalEnabled     bool     `yaml:"terminal_enabled"`
-	ProgressiveTools    bool     `yaml:"progressive_tools"`
-	ToolSearchThreshold int      `yaml:"tool_search_threshold"`
-	EnabledToolsets     []string `yaml:"enabled_toolsets"`
+	WorkDir             string   `yaml:"work_dir" json:"work_dir"`
+	ApprovalMode        string   `yaml:"approval_mode" json:"approval_mode"`
+	TerminalEnabled     bool     `yaml:"terminal_enabled" json:"terminal_enabled"`
+	ProgressiveTools    bool     `yaml:"progressive_tools" json:"progressive_tools"`
+	ToolSearchThreshold int      `yaml:"tool_search_threshold" json:"tool_search_threshold"`
+	EnabledToolsets     []string `yaml:"enabled_toolsets" json:"enabled_toolsets"`
 }
 type MemoryConfig struct {
-	CapacityLimit          int  `yaml:"capacity_limit"`
-	ConsolidationThreshold int  `yaml:"consolidation_threshold"`
-	AutoNudge              bool `yaml:"auto_nudge"`
-	AutoConsolidate        bool `yaml:"auto_consolidate"`
+	Use                    bool `yaml:"use" json:"use"`
+	CapacityLimit          int  `yaml:"-" json:"-"`
+	ConsolidationThreshold int  `yaml:"-" json:"-"`
+	AutoNudge              bool `yaml:"-" json:"-"`
+	AutoConsolidate        bool `yaml:"-" json:"-"`
 }
 type SecurityConfig struct {
-	Policies []security.Policy `yaml:"policies"`
+	Policies []security.Policy `yaml:"policies" json:"policies"`
 }
 
 type FeatureConfig struct {
-	Skills    bool `yaml:"skills"`
-	Commands  bool `yaml:"commands"`
-	Subagents bool `yaml:"subagents"`
-	Workflow  bool `yaml:"workflow"`
-	ModelIO   bool `yaml:"model_io"`
+	Compact   bool `yaml:"compact" json:"compact"`
+	Rewind    bool `yaml:"rewind" json:"rewind"`
+	Subagent  bool `yaml:"subagent" json:"subagent"`
+	Memory    bool `yaml:"memory" json:"memory"`
+	Skill     bool `yaml:"skill" json:"skill"`
+	MCP       bool `yaml:"mcp" json:"mcp"`
+	Skills    bool `yaml:"-" json:"-"`
+	Subagents bool `yaml:"-" json:"-"`
+	Commands  bool `yaml:"-" json:"-"`
+	Workflow  bool `yaml:"-" json:"-"`
+	ModelIO   bool `yaml:"-" json:"-"`
 }
 type UIConfig struct {
-	Locale string `yaml:"locale"`
+	Locale string `yaml:"locale" json:"locale"`
+	Theme  string `yaml:"theme" json:"theme"`
 }
 type SkillsConfig struct {
-	Roots          []string `yaml:"roots"`
-	MetadataBudget int      `yaml:"metadata_budget"`
+	Enabled             bool     `yaml:"enabled" json:"enabled"`
+	IncludeInstructions bool     `yaml:"includeInstructions" json:"includeInstructions"`
+	Roots               []string `yaml:"roots" json:"roots"`
+	MetadataBudget      int      `yaml:"metadataBudget" json:"metadataBudget"`
 }
 type CommandsConfig struct {
-	Roots           []string `yaml:"roots"`
-	MetadataBudget  int      `yaml:"metadata_budget"`
-	MaxCommandBytes int      `yaml:"max_command_bytes"`
+	Roots           []string `yaml:"roots" json:"roots"`
+	MetadataBudget  int      `yaml:"metadata_budget" json:"metadata_budget"`
+	MaxCommandBytes int      `yaml:"max_command_bytes" json:"max_command_bytes"`
 }
 type WorkflowConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	Roots          []string `yaml:"roots"`
-	MaxNodes       int      `yaml:"max_nodes"`
-	MaxConcurrency int      `yaml:"max_concurrency"`
-	MaxAgentCalls  int      `yaml:"max_agent_calls"`
-	TimeoutSeconds int      `yaml:"timeout_seconds"`
+	Enabled        bool     `yaml:"enabled" json:"enabled"`
+	Roots          []string `yaml:"roots" json:"roots"`
+	MaxNodes       int      `yaml:"max_nodes" json:"max_nodes"`
+	MaxConcurrency int      `yaml:"max_concurrency" json:"max_concurrency"`
+	MaxAgentCalls  int      `yaml:"max_agent_calls" json:"max_agent_calls"`
+	TimeoutSeconds int      `yaml:"timeout_seconds" json:"timeout_seconds"`
 }
 type TelemetryConfig struct {
-	Mode             string `yaml:"mode"`
-	Directory        string `yaml:"directory"`
-	QueueSize        int    `yaml:"queue_size"`
-	MaxArtifactBytes int64  `yaml:"max_artifact_bytes"`
-	RetentionFiles   int    `yaml:"retention_files"`
+	Mode             string `yaml:"mode" json:"mode"`
+	Directory        string `yaml:"directory" json:"directory"`
+	QueueSize        int    `yaml:"queue_size" json:"queue_size"`
+	MaxArtifactBytes int64  `yaml:"max_artifact_bytes" json:"max_artifact_bytes"`
+	RetentionFiles   int    `yaml:"retention_files" json:"retention_files"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Server: ServerConfig{Host: "127.0.0.1", Port: 8900, MaxRequestBytes: 1024 * 1024,
-			RateLimitPerMinute: 300, MaxConcurrentRuns: 10, LogFormat: "text"},
-		LLM: LLMConfig{APIFormat: "openai", BaseURL: "https://api.openai.com/v1", Model: "gpt-4o", ContextWindow: 128000,
-			MaxToolIterations: 15, MaxRetries: 3, Temperature: 0.7, MaxOutputTokens: 4096,
-			MaxRunTokens: 100000, RunTimeoutSeconds: 1800},
-		Embedding:   EmbeddingConfig{BaseURL: "https://api.openai.com/v1", Model: "text-embedding-3-small", Dimensions: 1536},
-		Store:       StoreConfig{DBPath: "./data/agent.db", VectorBackend: "sqlite"},
-		Workspace:   WorkspaceConfig{Path: "./workspace", SoulFile: "SOUL.md"},
-		Compression: CompressionConfig{ThresholdPercent: 0.50, ProtectFirstN: 3, ProtectLastN: 20, TargetRatio: 0.20},
-		Tools:       ToolsConfig{ApprovalMode: "smart", TerminalEnabled: true, ProgressiveTools: true, ToolSearchThreshold: 10},
-		Memory:      MemoryConfig{CapacityLimit: 200, ConsolidationThreshold: 160, AutoNudge: true},
-		Features:    FeatureConfig{Skills: true, Commands: true, Subagents: true, Workflow: true, ModelIO: true},
-		UI:          UIConfig{Locale: "zh-CN"},
-		Skills:      SkillsConfig{MetadataBudget: 8192},
+		ModelStream:       ModelStreamConfig{IdleTimeoutMs: DefaultModelStreamIdleTimeoutMs},
+		Permission:        PermissionConfig{Mode: "build", AllowedTools: []string{}, DisallowedTools: []string{}},
+		Storage:           StorageConfig{Dir: "./data", SessionDBPath: "./data/agent.db"},
+		Network:           NetworkConfig{Timeout: DefaultNetworkTimeoutMs},
+		Logging:           LoggingConfig{Level: "info", Format: "text"},
+		ToolConcurrency:   ToolConcurrencyConfig{MaxConcurrency: DefaultToolConcurrency},
+		ModelAnomalyGuard: ModelAnomalyGuardConfig{RepeatedToolCallWarningThreshold: 3, MaxBudgetWarningsPerTurn: 3},
+		MCP:               MCPConfig{Servers: map[string]MCPServerConfig{}},
+		SkillOverrides:    map[string]EntryOverride{}, CommandOverrides: map[string]EntryOverride{},
+		Server: ServerConfig{Host: "127.0.0.1", Port: 3030, MaxRequestBytes: 1024 * 1024,
+			RateLimitPerMinute: 300, MaxConcurrentRuns: 10, LogFormat: "text", TerminalEnabled: true},
+		LLM: LLMConfig{APIFormat: "openai", BaseURL: "https://api.openai.com/v1", Model: "", ContextWindow: DefaultContextWindow,
+			MaxRetries: DefaultModelRetries, MaxOutputTokens: DefaultOutputTokens,
+			RequestTimeoutMs: DefaultNetworkTimeoutMs, StreamIdleTimeoutMs: DefaultModelStreamIdleTimeoutMs,
+			RetryBaseDelayMs: 2000, RetryBackoffFactor: 2, RetryMaxDelayMs: 60000, RetryJitter: true},
+		Store:       StoreConfig{DBPath: "./data/agent.db"},
+		Workspace:   WorkspaceConfig{Path: ".", SoulFile: "AGENTS.md"},
+		Compression: CompressionConfig{MaxOutputTokens: DefaultOutputTokens, ThresholdPercent: 1.0, ProtectFirstN: 3, ProtectLastN: 20, TargetRatio: 0.20},
+		Tools:       ToolsConfig{ApprovalMode: "build", TerminalEnabled: true, ProgressiveTools: true, ToolSearchThreshold: 10},
+		Memory:      MemoryConfig{Use: true},
+		Features:    FeatureConfig{Compact: true, Rewind: true, Subagent: true, Memory: true, Skill: true, MCP: true, Skills: true, Commands: true, Subagents: true, Workflow: true, ModelIO: true},
+		UI:          UIConfig{Locale: "en-US", Theme: "auto"},
+		Skills:      SkillsConfig{Enabled: true, IncludeInstructions: true, MetadataBudget: DefaultSkillMetadataBudget},
 		Commands:    CommandsConfig{MetadataBudget: 8192, MaxCommandBytes: 100_000},
-		Workflow:    WorkflowConfig{Enabled: true, MaxNodes: 100, MaxConcurrency: 4, MaxAgentCalls: 50, TimeoutSeconds: 1800},
+		Workflow:    WorkflowConfig{Enabled: true, MaxNodes: 100, MaxConcurrency: DefaultToolConcurrency, MaxAgentCalls: 0, TimeoutSeconds: 0},
 		Telemetry:   TelemetryConfig{Mode: "redacted", Directory: "./data/model-io", QueueSize: 256, MaxArtifactBytes: 4 * 1024 * 1024, RetentionFiles: 100},
 	}
 }
@@ -172,7 +205,6 @@ func LoadLayered(path, userPath string) (Config, error) {
 
 func loadConfigFiles(paths ...string) (Config, error) {
 	cfg := DefaultConfig()
-	workspaceExplicit, workDirExplicit := false, false
 	for _, path := range paths {
 		if path == "" {
 			continue
@@ -184,6 +216,9 @@ func loadConfigFiles(paths ...string) (Config, error) {
 		if err != nil {
 			return cfg, fmt.Errorf("read config file %s: %w", path, err)
 		}
+		if err := rejectRemovedConfigFields(data); err != nil {
+			return cfg, fmt.Errorf("%s: %w", path, err)
+		}
 		decoder := yaml.NewDecoder(strings.NewReader(string(data)))
 		decoder.KnownFields(true)
 		if err := decoder.Decode(&cfg); err != nil {
@@ -192,22 +227,10 @@ func loadConfigFiles(paths ...string) (Config, error) {
 		if err := ensureSingleDocument(decoder); err != nil {
 			return cfg, err
 		}
-		var explicit struct {
-			Workspace struct {
-				Path *string `yaml:"path"`
-			} `yaml:"workspace"`
-			Tools struct {
-				WorkDir *string `yaml:"work_dir"`
-			} `yaml:"tools"`
-		}
-		if err := yaml.Unmarshal(data, &explicit); err != nil {
-			return cfg, err
-		}
-		workspaceExplicit = workspaceExplicit || explicit.Workspace.Path != nil
-		workDirExplicit = workDirExplicit || explicit.Tools.WorkDir != nil
 	}
 	applyEnvOverrides(&cfg)
-	if err := normalizePaths(&cfg, workspaceExplicit, workDirExplicit); err != nil {
+	cfg.applyRuntimeSettings()
+	if err := normalizePaths(&cfg); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
@@ -235,8 +258,6 @@ func applyEnvOverrides(cfg *Config) {
 	cfg.Server.AuthToken = expandEnv(cfg.Server.AuthToken)
 	cfg.LLM.BaseURL = expandEnv(cfg.LLM.BaseURL)
 	cfg.LLM.APIKey = expandEnv(cfg.LLM.APIKey)
-	cfg.Embedding.BaseURL = expandEnv(cfg.Embedding.BaseURL)
-	cfg.Embedding.APIKey = expandEnv(cfg.Embedding.APIKey)
 	if value := os.Getenv("AUTH_TOKEN"); value != "" {
 		cfg.Server.AuthToken = value
 	}
@@ -255,31 +276,44 @@ func applyEnvOverrides(cfg *Config) {
 	setString("LLM_API_FORMAT", &cfg.LLM.APIFormat)
 	setString("LLM_BASE_URL", &cfg.LLM.BaseURL)
 	setString("LLM_MODEL", &cfg.LLM.Model)
-	setString("EMBEDDING_API_KEY", &cfg.Embedding.APIKey)
-	setString("DB_PATH", &cfg.Store.DBPath)
-	setString("VECTOR_BACKEND", &cfg.Store.VectorBackend)
-	setString("WORK_DIR", &cfg.Tools.WorkDir)
+	setString("DB_PATH", &cfg.Storage.SessionDBPath)
+	setString("ZCODE_STORAGE_DIR", &cfg.Storage.Dir)
+	setString("ZCODE_SESSION_DB", &cfg.Storage.SessionDBPath)
+	setString("ZCODE_SESSION_DB_PATH", &cfg.Storage.SessionDBPath)
+	setString("ZCODE_HTTP_PROXY", &cfg.Network.HTTPProxy)
+	setString("ZCODE_NO_PROXY", &cfg.Network.NoProxy)
+	setString("ZCODE_AGENT_CA_CERT", &cfg.Network.CACertFile)
+	setString("ZCODE_LOG_FORMAT", &cfg.Logging.Format)
+	for _, entry := range []struct {
+		key    string
+		target *int
+	}{
+		{"ZCODE_TIMEOUT", &cfg.Network.Timeout}, {"ZCODE_HTTP_TIMEOUT", &cfg.Network.Timeout},
+		{"ZCODE_MAX_TOOL_CONCURRENCY", &cfg.ToolConcurrency.MaxConcurrency},
+		{"ZCODE_MODEL_RETRY_MAX_RETRIES", &cfg.LLM.MaxRetries},
+		{"ZCODE_MODEL_RETRY_BASE_DELAY_MS", &cfg.LLM.RetryBaseDelayMs},
+		{"ZCODE_MODEL_RETRY_MAX_DELAY_MS", &cfg.LLM.RetryMaxDelayMs},
+	} {
+		if value := os.Getenv(entry.key); value != "" {
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				n = -1
+			}
+			*entry.target = n
+		}
+	}
+
+	if value := os.Getenv("ZCODE_MODEL_RETRY_BACKOFF_FACTOR"); value != "" {
+		if n, err := strconv.ParseFloat(value, 64); err == nil {
+			cfg.LLM.RetryBackoffFactor = n
+		} else {
+			cfg.LLM.RetryBackoffFactor = -1
+		}
+	}
 	setString("AGENT_CORE_WORKSPACE", &cfg.Workspace.Path)
 }
 
-// ApplyEnvOverrides reapplies environment precedence after project-layer merging.
-func ApplyEnvOverrides(cfg *Config) { applyEnvOverrides(cfg) }
-
-func normalizePaths(cfg *Config, workspaceExplicit, workDirExplicit bool) error {
-	workspaceEnv := os.Getenv("AGENT_CORE_WORKSPACE") != ""
-	if workDirExplicit && !workspaceExplicit && !workspaceEnv {
-		cfg.Workspace.Path = cfg.Tools.WorkDir
-	}
-	if workspaceEnv || (workspaceExplicit && !workDirExplicit) || cfg.Tools.WorkDir == "" {
-		cfg.Tools.WorkDir = cfg.Workspace.Path
-	}
-	if cfg.Workspace.Path != cfg.Tools.WorkDir {
-		workspace, err1 := filepath.Abs(cfg.Workspace.Path)
-		workDir, err2 := filepath.Abs(cfg.Tools.WorkDir)
-		if err1 == nil && err2 == nil && filepath.Clean(workspace) != filepath.Clean(workDir) {
-			return fmt.Errorf("workspace.path and tools.work_dir differ; use workspace.path as the single source")
-		}
-	}
+func normalizePaths(cfg *Config) error {
 	workspace, err := filepath.Abs(cfg.Workspace.Path)
 	if err != nil {
 		return fmt.Errorf("resolve workspace: %w", err)
@@ -291,19 +325,28 @@ func normalizePaths(cfg *Config, workspaceExplicit, workDirExplicit bool) error 
 
 // Redacted returns an effective configuration safe for diagnostics.
 func (c Config) Redacted() Config {
+	if proxy, err := url.Parse(c.Network.HTTPProxy); err == nil && proxy.User != nil {
+		proxy.User = nil
+		c.Network.HTTPProxy = proxy.String()
+	}
 	if c.Server.AuthToken != "" {
 		c.Server.AuthToken = "***"
 	}
 	if c.LLM.APIKey != "" {
 		c.LLM.APIKey = "***"
 	}
+	c.LLM.Fallbacks = append([]FallbackProvider(nil), c.LLM.Fallbacks...)
+	servers := make(map[string]MCPServerConfig, len(c.MCP.Servers))
+	for name, server := range c.MCP.Servers {
+		server.Env = maskValues(server.Env)
+		server.Headers = maskValues(server.Headers)
+		servers[name] = server
+	}
+	c.MCP.Servers = servers
 	for i := range c.LLM.Fallbacks {
 		if c.LLM.Fallbacks[i].APIKey != "" {
 			c.LLM.Fallbacks[i].APIKey = "***"
 		}
-	}
-	if c.Embedding.APIKey != "" {
-		c.Embedding.APIKey = "***"
 	}
 	return c
 }
@@ -316,6 +359,9 @@ const (
 )
 
 func (c *Config) Validate(mode ValidateMode) error {
+	if err := c.validateRuntimeSettings(); err != nil {
+		return err
+	}
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be between 1 and 65535")
 	}
@@ -339,10 +385,10 @@ func (c *Config) Validate(mode ValidateMode) error {
 	if err := ValidateAPIFormat(c.LLM.APIFormat); err != nil {
 		return fmt.Errorf("llm.api_format: %w", err)
 	}
-	if c.LLM.Model == "" || c.LLM.ContextWindow <= 0 || c.LLM.MaxToolIterations <= 0 || c.LLM.MaxRetries < 0 {
+	if c.LLM.ContextWindow <= 0 || c.LLM.MaxToolIterations < 0 || c.LLM.MaxRetries < 0 {
 		return fmt.Errorf("invalid LLM model, context window, iteration or retry budget")
 	}
-	if c.LLM.MaxOutputTokens <= 0 || c.LLM.MaxRunTokens <= 0 || c.LLM.RunTimeoutSeconds <= 0 {
+	if c.LLM.MaxOutputTokens <= 0 || c.LLM.MaxRunTokens < 0 || c.LLM.RunTimeoutSeconds < 0 {
 		return fmt.Errorf("LLM output/run budgets must be positive")
 	}
 	if c.LLM.Temperature < 0 || c.LLM.Temperature > 2 {
@@ -356,36 +402,26 @@ func (c *Config) Validate(mode ValidateMode) error {
 			return fmt.Errorf("invalid fallback provider %q", fallback.Name)
 		}
 	}
-	if c.Embedding.Dimensions <= 0 || security.CheckHTTPURL(c.Embedding.BaseURL) != nil {
-		return fmt.Errorf("invalid embedding configuration")
-	}
 	if c.Store.DBPath == "" {
-		return fmt.Errorf("store.db_path is required")
+		return fmt.Errorf("storage.sessionDbPath is required")
 	}
-	switch c.Store.VectorBackend {
-	case "sqlite", "sqlite-vec", "none":
-	default:
-		return fmt.Errorf("unsupported store.vector_backend %q", c.Store.VectorBackend)
-	}
+
 	if c.Workspace.Path == "" || c.Workspace.SoulFile == "" {
 		return fmt.Errorf("workspace.path and soul_file are required")
 	}
-	if c.Compression.ThresholdPercent <= 0 || c.Compression.ThresholdPercent >= 1 || c.Compression.TargetRatio <= 0 || c.Compression.TargetRatio > 1 {
+	if c.Compression.ThresholdPercent <= 0 || c.Compression.ThresholdPercent > 1 || c.Compression.TargetRatio <= 0 || c.Compression.TargetRatio > 1 {
 		return fmt.Errorf("invalid compression ratios")
 	}
 	if c.Compression.ProtectFirstN < 0 || c.Compression.ProtectLastN < 0 {
 		return fmt.Errorf("compression protection counts cannot be negative")
 	}
 	switch c.Tools.ApprovalMode {
-	case "smart", "plan", "build", "edit", "guarded", "yolo":
+	case "smart", "plan", "build", "edit", "guarded", "yolo", "auto":
 	default:
 		return fmt.Errorf("invalid tools.approval_mode %q", c.Tools.ApprovalMode)
 	}
 	if c.Tools.ToolSearchThreshold <= 0 {
 		return fmt.Errorf("tools.tool_search_threshold must be positive")
-	}
-	if c.Memory.CapacityLimit <= 0 || c.Memory.ConsolidationThreshold <= 0 || c.Memory.ConsolidationThreshold > c.Memory.CapacityLimit {
-		return fmt.Errorf("invalid memory capacity or consolidation threshold")
 	}
 	for _, policy := range c.Security.Policies {
 		for _, condition := range policy.Conditions {
@@ -404,7 +440,7 @@ func (c *Config) Validate(mode ValidateMode) error {
 	if c.Skills.MetadataBudget <= 0 || c.Commands.MetadataBudget <= 0 || c.Commands.MaxCommandBytes <= 0 {
 		return fmt.Errorf("skill and command budgets must be positive")
 	}
-	if c.Workflow.MaxNodes <= 0 || c.Workflow.MaxConcurrency <= 0 || c.Workflow.MaxAgentCalls <= 0 || c.Workflow.TimeoutSeconds <= 0 {
+	if c.Workflow.MaxNodes <= 0 || c.Workflow.MaxConcurrency <= 0 || c.Workflow.MaxAgentCalls < 0 || c.Workflow.TimeoutSeconds < 0 {
 		return fmt.Errorf("workflow limits must be positive")
 	}
 	if c.Telemetry.Mode != "redacted" && c.Telemetry.Mode != "training" {

@@ -44,11 +44,14 @@ type pendingApproval struct {
 
 // PermissionManager applies run modes and coordinates asynchronous approvals.
 type PermissionManager struct {
-	mode    string
-	timeout time.Duration
-	mu      sync.RWMutex
-	pending map[string]*pendingApproval
-	grants  map[string]bool
+	autoApproveHighRisk bool
+	allowed             map[string]bool
+	denied              map[string]bool
+	mode                string
+	timeout             time.Duration
+	mu                  sync.RWMutex
+	pending             map[string]*pendingApproval
+	grants              map[string]bool
 }
 
 func NewPermissionManager(mode string) *PermissionManager {
@@ -75,7 +78,29 @@ func (m *PermissionManager) Authorize(ctx context.Context, registered *Registere
 	if hasInfo && info.Mode != "" {
 		mode = info.Mode
 	}
+	name := registered.Provider.Name()
+	m.mu.RLock()
+	denied, allowed := m.denied[name], m.allowed[name]
+	m.mu.RUnlock()
+	if denied {
+		return fmt.Errorf("permission.disallowedTools denies %s", name)
+	}
+	if mode == "guarded" && registered.Source == SourceBuiltin && name == "run_terminal" && !caps.ReadOnly {
+		caps.AlwaysAsk = true
+	}
 	decision := m.decisionForMode(mode, caps)
+	if mode == "edit" && registered.Source == SourceBuiltin && caps.SideEffectScope == "workspace" {
+		switch name {
+		case "write_file", "edit_file", "delete_file", "move_file", "create_directory":
+			decision = "allow"
+		}
+	}
+	if allowed && mode != "auto" && mode != "plan" && !caps.AlwaysAsk {
+		decision = "allow"
+	}
+	if caps.AlwaysAsk && mode != "auto" {
+		decision = "ask"
+	}
 	if decision == "allow" {
 		return nil
 	}
@@ -88,7 +113,7 @@ func (m *PermissionManager) Authorize(ctx context.Context, registered *Registere
 	}
 	grantKey := info.ConversationID + "\x00" + registered.Provider.Name()
 	m.mu.RLock()
-	granted := m.grants[grantKey]
+	granted := m.grants[grantKey] && !caps.AlwaysAsk
 	m.mu.RUnlock()
 	if granted {
 		return nil
@@ -126,7 +151,7 @@ func (m *PermissionManager) Authorize(ctx context.Context, registered *Registere
 		if response.Decision != "allow" {
 			return fmt.Errorf("permission denied for %s", request.ToolName)
 		}
-		if response.Scope == "conversation" {
+		if response.Scope == "conversation" && !caps.AlwaysAsk {
 			m.mu.Lock()
 			m.grants[grantKey] = true
 			m.mu.Unlock()
@@ -209,19 +234,22 @@ func (m *PermissionManager) decisionForMode(mode string, caps Capabilities) stri
 		}
 		return "deny"
 	case "edit":
-		if caps.ReadOnly || (caps.SideEffectScope == "workspace" && !caps.Destructive) {
-			return "allow"
-		}
-		return "ask"
+		return m.decisionForMode("build", caps)
 	case "build":
-		if caps.ReadOnly || (!caps.NeedsApproval && !caps.Destructive && caps.RiskLevel != "high") {
+		if caps.ReadOnly && !caps.Destructive && !caps.NeedsApproval {
 			return "allow"
 		}
-		return "ask"
-	case "guarded":
-		if caps.Destructive || caps.RiskLevel == "high" || caps.NeedsApproval {
+		if caps.RiskLevel == "critical" || (caps.RiskLevel == "high" && !m.autoApproveHighRisk) {
 			return "ask"
 		}
+		if caps.SideEffectScope == "session" && caps.RiskLevel == "low" && !caps.Destructive && !caps.NeedsApproval {
+			return "allow"
+		}
+		if caps.NeedsApproval || caps.Destructive || (caps.SideEffectScope != "none" && caps.SideEffectScope != "") {
+			return "ask"
+		}
+		return "allow"
+	case "guarded":
 		return "allow"
 	case "yolo":
 		return "allow"
@@ -267,3 +295,20 @@ func (m *PermissionManager) Pending() []ApprovalRequest {
 	sort.Slice(requests, func(i, j int) bool { return requests[i].CreatedAt.Before(requests[j].CreatedAt) })
 	return requests
 }
+
+// ConfigureRules applies explicit tool names before serving requests. Explicit deny
+// remains authoritative even in yolo/guarded as a server security boundary.
+func (m *PermissionManager) ConfigureRules(allowed, denied []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.allowed = map[string]bool{}
+	m.denied = map[string]bool{}
+	for _, name := range allowed {
+		m.allowed[name] = true
+	}
+	for _, name := range denied {
+		m.denied[name] = true
+	}
+}
+
+func (m *PermissionManager) SetAutoApproveHighRisk(value bool) { m.autoApproveHighRisk = value }

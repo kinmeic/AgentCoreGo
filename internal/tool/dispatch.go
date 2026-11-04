@@ -20,11 +20,13 @@ type Registry struct {
 	version         int64
 	toolsets        map[string]*Toolset
 	enabledToolsets map[string]bool
+	slots           chan struct{}
 }
 
 // NewRegistry creates a new tool registry.
 func NewRegistry() *Registry {
 	return &Registry{
+		slots:    make(chan struct{}, 10),
 		tools:    make(map[string]*RegisteredTool),
 		toolsets: DefaultToolsets(),
 	}
@@ -213,6 +215,13 @@ func (r *Registry) ToolDefinitionsForRun(state *DiscoveryState) []model.ToolDefi
 		return r.ToolDefinitionsFor(nil)
 	}
 	visible := make(map[string]bool)
+	r.mu.RLock()
+	for name, registered := range r.tools {
+		if registered.AlwaysLoaded {
+			visible[name] = true
+		}
+	}
+	r.mu.RUnlock()
 	for _, name := range CoreToolNames() {
 		visible[name] = true
 	}
@@ -240,6 +249,7 @@ func (r *Registry) Dispatch(ctx context.Context, name string, args map[string]an
 	rt, ok := r.tools[name]
 	enabled := ok && r.isToolEnabledLocked(name)
 	policyCheck := r.policyCheck
+	slots := r.slots
 	r.mu.RUnlock()
 	if !ok {
 		return "", fmt.Errorf("tool not found: %s", name)
@@ -268,6 +278,12 @@ func (r *Registry) Dispatch(ctx context.Context, name string, args map[string]an
 		if err := policyCheck(ctx, name, args); err != nil {
 			return "", fmt.Errorf("blocked by policy: %w", err)
 		}
+	}
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
 	execCtx := ctx
 	cancel := func() {}
@@ -302,4 +318,24 @@ func (r *Registry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.tools)
+}
+
+// SetConcurrencyLimit configures the shared execution queue before serving requests.
+func (r *Registry) SetConcurrencyLimit(n int) {
+	if n < 1 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.slots = make(chan struct{}, n)
+}
+
+func (r *Registry) SetOriginAlwaysLoaded(origin string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, registered := range r.tools {
+		if registered.Source == SourceMCP && registered.Origin == origin {
+			registered.AlwaysLoaded = true
+		}
+	}
 }

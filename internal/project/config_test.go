@@ -22,18 +22,17 @@ func TestProjectLayerIsRestrictedAndContentAddressed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.LLM.Model != "project-model" || cfg.LLM.ReasoningEffort != "high" {
-		t.Fatalf("model layer not applied: %#v", cfg.LLM)
+	if cfg.LLM.Model != "" || cfg.LLM.ReasoningEffort != "" {
+		t.Fatalf("project changed protected model: %#v", cfg.LLM)
 	}
 	if cfg.Tools.ApprovalMode != "build" {
 		t.Fatal("project escalated permission mode")
 	}
-	if cfg.Features.Skills {
-		t.Fatal("project feature flag was not applied")
+	if !cfg.Features.Skills {
+		t.Fatal("project changed protected feature flag")
 	}
-	resolvedWorkspace, _ := filepath.EvalSymlinks(workspace)
-	if len(cfg.Skills.Roots) != 1 || cfg.Skills.Roots[0] != filepath.Join(resolvedWorkspace, "skills") {
-		t.Fatalf("roots not resolved: %v", cfg.Skills.Roots)
+	if len(cfg.Skills.Roots) != 0 {
+		t.Fatal("project changed skill roots")
 	}
 	if report.BundleDigest == "" || len(report.Declarations) != 1 {
 		t.Fatalf("missing trust evidence: %#v", report)

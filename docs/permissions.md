@@ -18,9 +18,10 @@
 | 模式 | 语义 |
 |---|---|
 | `plan` | 仅只读工具；写文件、终端、外部副作用拒绝。不是 OS 级只读沙箱 |
-| `build` / `smart` | 只读通常允许；声明需要审批、破坏性、高风险工具需要审批 |
-| `edit` | 非破坏性 workspace 文件编辑通常允许；外部副作用仍需审批 |
-| `guarded` | 普通工具较宽松，高风险、破坏性或声明审批的工具逐次询问 |
+| `build` | 无副作用只读通常允许；workspace 或外部副作用需审批 |
+| `edit` | 非破坏性 workspace 文件编辑通常允许；非文件编辑的副作用仍按 build 询问 |
+| `guarded` | 与 ZCode 一致，普通模式判定放行；alwaysAsk 仍须询问 |
+| `auto` | 保留模式，当前拒绝工具；不会自动授权 |
 | `yolo` | 普通权限检查放行，适合已有容器/OS 隔离的无人值守任务；静态 deny 仍生效 |
 
 未声明能力的外部 MCP/Host Callback 工具默认按高风险、外部副作用、需要审批处理。MCP annotations 只是不可信提示，不作为授权依据。
@@ -57,28 +58,17 @@ Provider 可声明：
 
 这些声明服务权限与资源治理，不替代操作系统隔离。
 
-## 自定义策略
+## 显式工具规则
 
 ```yaml
-security:
-  policies:
-    - name: deny-sudo
-      effect: deny
-      resource: terminal
-      conditions:
-        - field: target
-          operator: regex
-          values: ['(^|\\s)sudo(\\s|$)']
-
-    - name: audit-sensitive-write
-      effect: audit
-      resource: file
-      conditions:
-        - field: target
-          operator: contains
-          values: ['.env', 'id_rsa']
+permission:
+  mode: build
+  allowedTools: [write_file]
+  disallowedTools: [run_terminal]
 ```
 
-字段支持 `target/operation/resource` 及 run metadata。策略日志只记录资源、操作和 conversation，不记录完整命令、路径或密钥。
+工具名以 `/v1/tools` 为准。显式 deny 在 yolo/guarded 仍生效，这是独立服务保留的安全边界；与 ZCode 部分普通工具的判定顺序存在差异。Explore 的只读约束同样不可被允许规则解除。`always_ask` 强制确认独立于普通 needs_approval 提示。
 
-> 字符串策略和 regex 不是 shell 解析器，不能阻止所有等价命令。需要强隔离时禁用终端，并使用容器、独立低权限用户、只读根文件系统和资源限额。
+旧 `security.policies` YAML 已删除，不能继续使用。字符串工具规则不替代 OS 隔离。
+
+Guarded 的终端规则保留服务端保守边界：无法证明只读的本地 shell 命令每次询问，不能用会话授权跳过。参考 ZCode 使用更细的危险 Bash 语法匹配器；Go 服务不会把未实现的匹配器当作已具备能力。普通非终端工具仍按 guarded 语义处理。

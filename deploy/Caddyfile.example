@@ -2,7 +2,7 @@ example.com {
     encode zstd gzip
 
     handle_path /agent-core/* {
-        reverse_proxy http://127.0.0.1:8900 {
+        reverse_proxy http://127.0.0.1:3030 {
             flush_interval -1
         }
     }

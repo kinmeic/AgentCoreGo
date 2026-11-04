@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 )
 
 // IterationBudget tracks token consumption and iteration count for an agent run.
@@ -33,6 +34,9 @@ func (b *IterationBudget) RecordIteration(usedTokens int) {
 
 // Remaining returns how many iterations are left.
 func (b *IterationBudget) Remaining() int {
+	if b.MaxIterations <= 0 {
+		return math.MaxInt
+	}
 	r := b.MaxIterations - b.currentIteration
 	if r < 0 {
 		return 0
@@ -42,7 +46,7 @@ func (b *IterationBudget) Remaining() int {
 
 // Exhausted returns true if the budget is fully consumed.
 func (b *IterationBudget) Exhausted() bool {
-	if b.currentIteration >= b.MaxIterations {
+	if b.MaxIterations > 0 && b.currentIteration >= b.MaxIterations {
 		return true
 	}
 	if b.MaxTokens > 0 && b.totalTokens >= b.MaxTokens {
@@ -53,7 +57,7 @@ func (b *IterationBudget) Exhausted() bool {
 
 // ExceededMessage returns a human-readable message about what was exceeded.
 func (b *IterationBudget) ExceededMessage() string {
-	if b.currentIteration >= b.MaxIterations {
+	if b.MaxIterations > 0 && b.currentIteration >= b.MaxIterations {
 		return fmt.Sprintf("max tool iterations (%d) exceeded", b.MaxIterations)
 	}
 	if b.MaxTokens > 0 && b.totalTokens >= b.MaxTokens {

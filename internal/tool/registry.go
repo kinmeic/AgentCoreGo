@@ -41,6 +41,7 @@ type RegisteredTool struct {
 	Provider     Provider
 	Source       Source
 	Origin       string // e.g., MCP server name or "builtin"
+	AlwaysLoaded bool
 	Capabilities Capabilities
 }
 

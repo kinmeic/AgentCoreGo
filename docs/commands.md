@@ -27,7 +27,7 @@
 | `/locale [auto|en-US|zh-CN]` | 查看/切换 UI locale | `/language` |
 | `/mcp [list|status|disconnect <server>]` | MCP 状态与断开 | — |
 | `/plugins [list|enable|disable]` | 插件管理 | `/plugin` |
-| `/mode [plan|build|edit|yolo|guarded]` | 会话权限模式，不能超过服务器上限 | — |
+| `/mode [plan|build|edit|yolo|guarded|auto]` | 会话权限模式，显式 deny 和只读子 run 约束仍优先 | — |
 | `/model [list|provider/model]` | 会话模型覆盖 | — |
 | `/new` | 新会话 | `/clear` |
 | `/resume [sessionId]` | 加载会话 | `/continue` |
@@ -98,3 +98,5 @@ description: 审查代码时使用，要求给出文件和行号证据。
 ./agent-core trust review
 ./agent-core trust grant --digest <bundle-digest>
 ```
+
+完整 `skills.enabled/includeInstructions/metadataBudget/roots`、单文件覆盖与发现优先级示例见 [README SKILL 配置](../README.md#skill-配置)。默认预算 20000 字符；功能关闭后 API 返回 503。

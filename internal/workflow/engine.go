@@ -113,7 +113,11 @@ func (e *Engine) Resume(ctx context.Context, runID string) (*RunView, error) {
 }
 
 func (e *Engine) execute(parent context.Context, top *model.Run, record *store.WorkflowDefinitionRecord, definition Definition) (*RunView, error) {
-	ctx, cancel := context.WithTimeout(parent, time.Duration(e.cfg.Workflow.TimeoutSeconds)*time.Second)
+	ctx, cancel := context.WithCancel(parent)
+	if e.cfg.Workflow.TimeoutSeconds > 0 {
+		cancel()
+		ctx, cancel = context.WithTimeout(parent, time.Duration(e.cfg.Workflow.TimeoutSeconds)*time.Second)
+	}
 	defer cancel()
 	e.mu.Lock()
 	if _, exists := e.active[record.ID]; exists {
@@ -343,7 +347,7 @@ func (e *Engine) runTask(ctx context.Context, top *model.Run, current task, agen
 		var output json.RawMessage
 		switch current.node.Type {
 		case "agent":
-			if agentCalls.Add(1) > int64(e.cfg.Workflow.MaxAgentCalls) {
+			if calls := agentCalls.Add(1); e.cfg.Workflow.MaxAgentCalls > 0 && calls > int64(e.cfg.Workflow.MaxAgentCalls) {
 				lastErr = fmt.Errorf("workflow agent call budget exceeded")
 				break
 			}

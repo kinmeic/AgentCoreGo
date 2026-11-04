@@ -20,6 +20,11 @@ type Loader struct{ options Options }
 
 func NewLoader(options Options) *Loader {
 	options.Roots = append([]string(nil), options.Roots...)
+	overrides := make(map[string]bool, len(options.Overrides))
+	for path, enabled := range options.Overrides {
+		overrides[filepath.Clean(path)] = enabled
+	}
+	options.Overrides = overrides
 	return &Loader{options: options}
 }
 
@@ -66,6 +71,9 @@ func (l *Loader) Discover() Catalog {
 				return nil
 			}
 			if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+				return nil
+			}
+			if enabled, exists := l.options.Overrides[filepath.Clean(path)]; exists && !enabled {
 				return nil
 			}
 			command, ok := readCommand(path, root, &diagnostics)

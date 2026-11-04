@@ -27,14 +27,10 @@ func TestWorkspaceIsSingleSource(t *testing.T) {
 	}
 }
 
-func TestLegacyWorkDirMapsToWorkspace(t *testing.T) {
-	workspace := filepath.Join(t.TempDir(), "legacy")
-	cfg, err := Load(writeConfig(t, "tools:\n  work_dir: "+workspace+"\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Workspace.Path != workspace || cfg.Tools.WorkDir != workspace {
-		t.Fatalf("legacy mapping failed: %#v", cfg.Workspace)
+func TestLegacyWorkDirRequiresMigration(t *testing.T) {
+	_, err := Load(writeConfig(t, "tools:\n  work_dir: ./legacy\n"))
+	if err == nil {
+		t.Fatal("removed tools config accepted")
 	}
 }
 

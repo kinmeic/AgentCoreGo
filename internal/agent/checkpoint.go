@@ -11,6 +11,10 @@ import (
 
 // Checkpoint is a run-scoped resumable boundary with an immutable execution manifest.
 type Checkpoint struct {
+	ToolSignatures map[string]int       `json:"tool_signatures,omitempty"`
+	ToolCallCount  int                  `json:"tool_call_count,omitempty"`
+	BudgetWarnings int                  `json:"budget_warnings,omitempty"`
+	PendingWarning bool                 `json:"pending_warning,omitempty"`
 	ConversationID string               `json:"conversation_id"`
 	RunID          string               `json:"run_id"`
 	Spec           model.RunSpec        `json:"spec"`

@@ -43,6 +43,15 @@ type ToolFunction struct {
 	Arguments string `json:"arguments"`
 }
 
+// MemorySearchResult is a local text-retrieval result, not a vector/embedding.
+type MemorySearchResult struct {
+	SourceType     string  `json:"source_type"`
+	SourceID       string  `json:"source_id"`
+	Content        string  `json:"content"`
+	ContentSummary string  `json:"content_summary"`
+	Score          float32 `json:"score"`
+}
+
 // ToolResult represents the result of executing a tool call.
 type ToolResult struct {
 	ToolCallID string `json:"tool_call_id"`

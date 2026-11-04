@@ -17,7 +17,6 @@ import (
 	"agent-core/internal/server"
 	"agent-core/internal/skills"
 	"agent-core/internal/store"
-	"agent-core/internal/store/vector"
 	"agent-core/internal/subagents"
 	"agent-core/internal/telemetry"
 	"agent-core/internal/tool"
@@ -65,7 +64,7 @@ func main() {
 		log.Fatalf("[agent-core] Failed to load config: %v", err)
 	}
 
-	observability.Init(cfg.Server.LogFormat)
+	observability.Init(cfg.Logging.Format, cfg.Logging.Level)
 
 	// Validate configuration (security checks for HTTP server mode)
 	if err := cfg.Validate(config.ModeHTTP); err != nil {
@@ -86,32 +85,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("[agent-core] Failed to initialize database: %v", err)
 	}
+	if err := dbStore.InterruptAcceptedCommands(); err != nil {
+		log.Fatalf("recover accepted runs: %v", err)
+	}
 	log.Printf("[agent-core] Database initialized at %s", cfg.Store.DBPath)
-
-	// Initialize embedding client
-	var embClient *vector.EmbeddingClient
-	if cfg.Embedding.APIKey != "" {
-		embClient = vector.NewEmbeddingClient(
-			cfg.Embedding.BaseURL,
-			cfg.Embedding.APIKey,
-			cfg.Embedding.Model,
-			cfg.Embedding.Dimensions,
-		)
-		log.Printf("[agent-core] Embedding client initialized (%s, dim=%d)", cfg.Embedding.Model, cfg.Embedding.Dimensions)
-	}
-
-	// Initialize vector store
-	var vecStore vector.Store
-	if cfg.Store.VectorBackend != "none" {
-		vecStore, err = vector.NewSQLiteVec(dbStore.DB(), cfg.Embedding.Dimensions)
-		if err != nil {
-			log.Printf("[agent-core] Warning: vector store initialization failed: %v", err)
-			vecStore = nil
-		}
-	}
 
 	// Initialize tool registry
 	toolRegistry := tool.NewRegistry()
+	toolRegistry.SetConcurrencyLimit(cfg.ToolConcurrency.MaxConcurrency)
 	if len(cfg.Tools.EnabledToolsets) > 0 {
 		enabled := make(map[string]bool, len(cfg.Tools.EnabledToolsets))
 		for _, name := range cfg.Tools.EnabledToolsets {
@@ -125,7 +106,9 @@ func main() {
 
 	// Initialize security policy engine
 	policyEngine := security.NewPolicyEngine(cfg.Security.Policies)
-	permissions := tool.NewPermissionManager(cfg.Tools.ApprovalMode)
+	permissions := tool.NewPermissionManager(cfg.Permission.Mode)
+	permissions.ConfigureRules(cfg.Permission.AllowedTools, cfg.Permission.DisallowedTools)
+	permissions.SetAutoApproveHighRisk(cfg.Permission.AutoApproveHighRisk)
 	toolRegistry.SetPolicyCheck(func(ctx context.Context, toolName string, args map[string]any) error {
 		action := security.Action{Resource: resourceForTool(toolName), Operation: operationForTool(toolName), Target: extractTarget(toolName, args)}
 		if info, ok := tool.ExecutionInfoFromContext(ctx); ok {
@@ -146,7 +129,7 @@ func main() {
 	}
 	if cfg.Tools.TerminalEnabled {
 		log.Printf("[agent-core] WARNING: terminal tool is enabled — it is NOT a true sandbox. " +
-			"For production, set tools.terminal_enabled: false and use container/OS isolation.")
+			"For production, set server.terminalEnabled: false and use container/OS isolation.")
 	}
 	log.Printf("[agent-core] Registered %d builtin tools", toolRegistry.Count())
 
@@ -177,16 +160,25 @@ func main() {
 	// Restore MCP server connections from database
 	mcpServers, _ := dbStore.GetMCPServers()
 	for _, srv := range mcpServers {
-		if !srv.Enabled {
+		if _, declared := cfg.MCP.Servers[srv.Name]; declared {
+			continue
+		}
+		if !cfg.Features.MCP || !srv.Enabled {
 			continue
 		}
 		srvCfg := mcp.RestoreConfig(srv.Name, srv.Transport, []byte(srv.Config))
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := mcpManager.Connect(ctx, srvCfg); err != nil {
 			log.Printf("[agent-core] Warning: failed to restore MCP server %s: %v", srv.Name, err)
 		}
 		cancel()
+	}
+
+	mcpManager.ConnectConfigured(context.Background(), cfg.MCP, cfg.Features.MCP)
+
+	if status, err := trust.NewManager(dbStore).Review(cfg.Workspace.Path, projectReport.Declarations); err == nil && status.Trusted {
+		mcpManager.ConnectConfigured(context.Background(), projectReport.MCP, cfg.Features.MCP)
 	}
 
 	// Initialize model-io before any provider clients.
@@ -199,22 +191,14 @@ func main() {
 	}
 
 	// Initialize memory service
-	var embedder vector.Embedder
-	if recorder != nil && embClient != nil {
-		embClient.SetRecorder(recorder)
-	}
-	if embClient != nil {
-		embedder = embClient
-	}
-	memService := memory.NewService(dbStore, vecStore, embedder, cfg.Memory)
-	if err := memService.Rebuild(context.Background()); err != nil {
-		log.Printf("[memory] index rebuild degraded: %v", err)
-	}
-	if err := toolRegistry.Register(memory.NewSaveMemoryTool(memService), tool.SourceBuiltin, "builtin"); err != nil {
-		log.Fatalf("[agent-core] Register save_memory: %v", err)
-	}
-	if err := toolRegistry.Register(memory.NewSearchMemoryTool(memService), tool.SourceBuiltin, "builtin"); err != nil {
-		log.Fatalf("[agent-core] Register search_memory: %v", err)
+	memService := memory.NewService(dbStore, cfg.Memory)
+	if cfg.Features.Memory && cfg.Memory.Use {
+		if err := toolRegistry.Register(memory.NewSaveMemoryTool(memService), tool.SourceBuiltin, "builtin"); err != nil {
+			log.Fatalf("[agent-core] Register save_memory: %v", err)
+		}
+		if err := toolRegistry.Register(memory.NewSearchMemoryTool(memService), tool.SourceBuiltin, "builtin"); err != nil {
+			log.Fatalf("[agent-core] Register search_memory: %v", err)
+		}
 	}
 	memCount, _ := memService.Count()
 	log.Printf("[agent-core] Memory service initialized (%d memories)", memCount)
@@ -268,8 +252,8 @@ func main() {
 	}
 	trustManager := trust.NewManager(dbStore)
 	home, _ := os.UserHomeDir()
-	skillLoader := skills.NewLoader(skills.Options{Roots: cfg.Skills.Roots, ProjectDir: cfg.Workspace.Path, UserDir: home})
-	commandLoader := commands.NewLoader(commands.Options{Roots: cfg.Commands.Roots, ProjectDir: cfg.Workspace.Path, UserDir: home})
+	skillLoader := skills.NewLoader(skills.Options{Overrides: config.EnabledOverrides(cfg.SkillOverrides), Roots: cfg.Skills.Roots, ProjectDir: cfg.Workspace.Path, UserDir: home})
+	commandLoader := commands.NewLoader(commands.Options{Overrides: config.EnabledOverrides(cfg.CommandOverrides), Roots: cfg.Commands.Roots, ProjectDir: cfg.Workspace.Path, UserDir: home})
 	orchestrator.SetSkillLoader(skillLoader)
 	orchestrator.SetCommandLoader(commandLoader)
 	if cfg.Features.Skills {
@@ -325,6 +309,7 @@ func main() {
 	// Graceful shutdown sequence:
 	// 1. Stop all active orchestrator runs (cancel contexts)
 	orchestrator.StopAll()
+	srv.CloseConnections()
 
 	// 2. Shutdown HTTP server (stops accepting new requests, waits for in-flight)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -366,7 +351,6 @@ func loadEffectiveConfig(path string) (config.Config, project.Report, error) {
 	if err != nil {
 		return cfg, report, err
 	}
-	config.ApplyEnvOverrides(&cfg)
 	return cfg, report, nil
 }
 
@@ -469,6 +453,7 @@ func runMCPServer() {
 
 	// Minimal initialization for MCP server mode (no DB, no LLM needed)
 	toolRegistry := tool.NewRegistry()
+	toolRegistry.SetConcurrencyLimit(cfg.ToolConcurrency.MaxConcurrency)
 	if len(cfg.Tools.EnabledToolsets) > 0 {
 		enabled := make(map[string]bool, len(cfg.Tools.EnabledToolsets))
 		for _, name := range cfg.Tools.EnabledToolsets {
@@ -482,7 +467,9 @@ func runMCPServer() {
 
 	// Initialize security policy engine (same as HTTP mode)
 	policyEngine := security.NewPolicyEngine(cfg.Security.Policies)
-	permissions := tool.NewPermissionManager(cfg.Tools.ApprovalMode)
+	permissions := tool.NewPermissionManager(cfg.Permission.Mode)
+	permissions.ConfigureRules(cfg.Permission.AllowedTools, cfg.Permission.DisallowedTools)
+	permissions.SetAutoApproveHighRisk(cfg.Permission.AutoApproveHighRisk)
 	toolRegistry.SetPolicyCheck(func(ctx context.Context, toolName string, args map[string]any) error {
 		action := security.Action{Resource: resourceForTool(toolName), Operation: operationForTool(toolName), Target: extractTarget(toolName, args)}
 		if info, ok := tool.ExecutionInfoFromContext(ctx); ok {
@@ -507,19 +494,23 @@ func runMCPServer() {
 		mcpManager = mcp.NewManager(toolRegistry)
 		mcpServers, _ := dbStore.GetMCPServers()
 		for _, srv := range mcpServers {
-			if !srv.Enabled {
+			if _, declared := cfg.MCP.Servers[srv.Name]; declared {
+				continue
+			}
+			if !cfg.Features.MCP || !srv.Enabled {
 				continue
 			}
 			var srvCfg mcp.ServerConfig
 			srvCfg.Name = srv.Name
 			srvCfg.Transport = srv.Transport
 			srvCfg.Config = []byte(srv.Config)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			if err := mcpManager.Connect(ctx, srvCfg); err != nil {
 				log.Printf("[mcp-serve] Warning: failed to connect MCP server %s: %v", srv.Name, err)
 			}
 			cancel()
 		}
+		mcpManager.ConnectConfigured(context.Background(), cfg.MCP, cfg.Features.MCP)
 		dbStore.Close()
 	}
 

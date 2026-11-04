@@ -38,6 +38,7 @@ type clientConn struct {
 }
 
 type ServerConfig struct {
+	Timeout   time.Duration   `json:"-"`
 	Name      string          `json:"name"`
 	Transport string          `json:"transport"`
 	Config    json.RawMessage `json:"config"`
@@ -136,6 +137,13 @@ func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) (err error) {
 	}
 	conn.session = session
 	providers, err := m.discoverTools(ctx, conn)
+	for _, provider := range providers {
+		if cfg.Timeout > 0 {
+			if remote, ok := provider.(*remoteTool); ok {
+				remote.timeout = cfg.Timeout
+			}
+		}
+	}
 	if err != nil {
 		_ = closeConnection(conn)
 		return err

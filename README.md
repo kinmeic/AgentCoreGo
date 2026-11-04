@@ -6,25 +6,25 @@
 
 轻量级 Go AI Agent 服务端，支持 OpenAI 兼容接口与 Anthropic Messages API、MCP、权限审批、子代理与工作流编排，基于 SQLite 持久化。
 
-面向自托管的编程助手和自动化任务，以 Go 单二进制提供 HTTP JSON/SSE API 与 CLI，可接入 IDE、自动化平台或自定义前端。服务采用单租户、单 workspace 模型，支持持久化工具执行、会话恢复和文件快照。
+面向自托管的编程助手和自动化任务，以 Go 单二进制提供 HTTP JSON/SSE/WebSocket API 与 CLI，可接入 IDE、自动化平台或自定义前端。服务采用单租户、单 workspace 模型，支持持久化工具执行、会话恢复和文件快照。
 
 [快速开始](#快速开始) · [HTTP API](docs/api.md) · [配置说明](docs/configuration.md) · [安全模型](docs/security.md) · [部署运维](docs/operations.md)
 
 ## 已实现能力
 
 - **模型接入**：OpenAI Chat Completions 与 Anthropic Messages 原生协议，同步/流式响应、工具调用，以及可分别配置协议的备用模型。
-- **可靠 Agent 运行**：同步/流式共用执行路径，独立 `run_id`，统一 `done | error | cancelled` 终态、迭代/token/时长/并发预算。
+- **可靠 Agent 运行**：同步/流式共用执行路径，独立 `run_id`，统一 `done | error | cancelled` 终态、取消、流空闲超时与并发控制，主 Agent 不设迭代/token/总时长硬停止。
 - **会话与恢复**：完整 tool-call/tool-result 历史、版本化 SQLite 迁移、启动前备份、事件游标、原子工具 checkpoint、显式 resume。
 - **工具与权限**：离线 JSON Schema 校验、能力声明、plan/build/edit/guarded/yolo、异步审批、会话级授权、静态 deny 优先。
 - **Coding 工具**：原子写、revision 冲突检测、精确编辑、删除/移动、glob/grep、只读 Git、进程组取消。
 - **真实 MCP**：官方 Go SDK，stdio、legacy SSE、streamable HTTP，工具发现/调用、版本协商、断连清理和 `mcp-serve`。
-- **扩展与记忆**：Host Callback HMAC、长期记忆 CRUD/检索/consolidation/索引重建、可插拔向量开关。
+- **扩展与记忆**：Host Callback HMAC、长期记忆 CRUD、本地文本检索与 consolidation，无 embedding 依赖。
 - **上下文管理**：Unicode/tool schema 预算、分级压缩、可持久化摘要、跨 chunk `<think>` 过滤、failover。
 - **工程能力**：薄 CLI、严格配置、CORS/限流/请求上限、结构化日志、readiness、指标、测试与容器部署。
 - **扩展生态**：项目配置层级与 Workspace Trust、Skills、内置/自定义 Slash Commands、RunSpec 固定扩展版本。
 - **任务编排**：Subagents、Explore 只读约束、声明式 YAML/JSON DAG Workflow、fan-out、有界重试、节点缓存与恢复。
 - **快照与 IDE 集成**：完整文件树快照、冲突检查、内容完整性校验与补偿恢复，提供 Workspace/Git/运行/变更管理 API。
-- **model-io 与评测**：原始 provider wire、工具/文件轨迹、redacted/training 采集、独立隔离 benchmark 与 grader。
+- **model-io 与评测**：原始 provider wire、工具/文件轨迹、默认脱敏诊断采集、独立隔离 benchmark 与 grader。
 
 > **安全边界**：文件工具有 workspace 路径与符号链接防护；终端命令拥有 AgentCore 进程的操作系统权限，**不是 OS 沙箱**。非 loopback 监听必须设置 `AUTH_TOKEN` 且禁用终端。当前会话、记忆和工具注册表是单租户共享状态，不是多租户隔离边界。
 
@@ -51,16 +51,15 @@ go build -o agent-core ./cmd/agent-core
 
 export LLM_API_KEY='your-api-key'
 export AUTH_TOKEN='a-long-random-local-token'
-# 如使用向量记忆：
-export EMBEDDING_API_KEY="$LLM_API_KEY"
+export LLM_MODEL='your-model-id'
 
 ./agent-core config validate --config agent-core.yaml
 ./agent-core config show --config agent-core.yaml  # 密钥自动脱敏
 ```
 
-编辑 [agent-core.yaml](agent-core.yaml)。`workspace.path` 是所有 workspace 工具的唯一目录来源；旧 `tools.work_dir` / `WORK_DIR` 仅作兼容映射，不应与 workspace 设置成不同路径。
+编辑 [agent-core.yaml](agent-core.yaml)。`workspace.path` 是所有文件工具与 `AGENTS.md` 的统一根目录。运行配置对齐 ZCode v3.17.2 / `a9fe401e`；旧字段须按[迁移对照表](docs/zcode-alignment.md)更新。
 
-按使用的模型服务设置 `llm.base_url`、`llm.model` 和 `LLM_API_KEY`。工作区默认位于 `./workspace`，SQLite 数据库默认位于 `./data/agent.db`。API key 通过环境变量传入。
+按使用的模型服务设置 `llm.base_url`、`llm.model` 和 `LLM_API_KEY`。工作区默认为当前目录，SQLite 数据库默认位于 `./data/agent.db`。API key 通过环境变量传入。
 
 ### 使用 Anthropic Messages
 
@@ -83,11 +82,11 @@ llm:
 ./agent-core -config agent-core.yaml
 ```
 
-默认监听 `127.0.0.1:8900`。检查：
+默认监听 `127.0.0.1:3030`。检查：
 
 ```bash
-curl http://127.0.0.1:8900/health
-curl -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:8900/ready
+curl http://127.0.0.1:3030/health
+curl -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:3030/ready
 ./agent-core doctor --config agent-core.yaml
 ```
 
@@ -98,13 +97,13 @@ curl -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:8900/ready
 ```bash
 export AUTH_TOKEN='a-long-random-local-token'
 export LLM_API_KEY='your-api-key'
-# 使用向量记忆时，同时设置 EMBEDDING_API_KEY
+export LLM_MODEL='your-model-id'
 docker compose up -d --build
 
-curl http://127.0.0.1:8900/health
+curl http://127.0.0.1:3030/health
 ```
 
-容器使用 [deploy/container.yaml](deploy/container.yaml)，默认禁用终端工具；宿主机端口仅绑定 `127.0.0.1:8900`，数据与工作区保存在独立 Docker volumes 中。使用其他模型服务时，修改容器配置中的模型地址和名称。生产部署与备份见 [运维文档](docs/operations.md)。
+容器使用 [deploy/container.yaml](deploy/container.yaml)，默认禁用终端工具；宿主机端口仅绑定 `127.0.0.1:3030`，数据与工作区保存在独立 Docker volumes 中。使用其他模型服务时，修改容器配置中的模型地址和名称。生产部署与备份见 [运维文档](docs/operations.md)。
 
 ## CLI
 
@@ -136,7 +135,7 @@ curl http://127.0.0.1:8900/health
 ## HTTP 示例
 
 ```bash
-curl -N -X POST http://127.0.0.1:8900/v1/chat/stream \
+curl -N -X POST http://127.0.0.1:3030/v1/chat/stream \
   -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"message":"帮我检查这个项目"}'
@@ -147,22 +146,140 @@ SSE 每帧包含 `id`、`event` 和 JSON `data`。事件 envelope 含 `schema_ve
 ```bash
 # 查询运行与事件
 curl -H "Authorization: Bearer $AUTH_TOKEN" \
-  http://127.0.0.1:8900/v1/runs/$RUN_ID
+  http://127.0.0.1:3030/v1/runs/$RUN_ID
 curl -H "Authorization: Bearer $AUTH_TOKEN" \
-  "http://127.0.0.1:8900/v1/runs/$RUN_ID/events?after=0"
+  "http://127.0.0.1:3030/v1/runs/$RUN_ID/events?after=0"
 
 # 恢复；同步请求不可处理交互审批，交互场景使用 stream=true
-curl -N -X POST "http://127.0.0.1:8900/v1/runs/$RUN_ID/resume" \
+curl -N -X POST "http://127.0.0.1:3030/v1/runs/$RUN_ID/resume" \
   -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"strategy":"retry","stream":true}'
 ```
 
+SSE 对话被接受后，断线不会取消任务；用 `X-Command-ID` 重试同一请求可去重。重新订阅 `GET /v1/runs/{run_id}/events/stream?after=<sequence>`，或发送 `Last-Event-ID` 恢复。停止使用 `/v1/runs/{run_id}/stop`。
+
 完整接口见 [API/SSE 文档](docs/api.md) 和 [OpenAPI 草案](docs/openapi.yaml)。
+
+## ZCode 配置对齐
+
+主 Agent 已移除 `max_tool_iterations: 15`、累计 token 和总运行时长硬停止；重复调用只警告。默认权限 `build`，技能元数据预算 `20000`，模型流空闲超时 `600000` ms，模型网络超时 `180000` ms，工具并发 `10`，模型重试 `10` 次。embedding 客户端、向量查询、索引重建接口与对应环境变量已移除；数据库升级先备份，再删除向量表，保留会话与记忆。
+
+[逐项对照表](docs/zcode-alignment.md)记录旧配置的全部 65 项、映射和删除原因。HTTP/SSE/WebSocket 共用执行与事件语义；JSON WebSocket 是本项目独立协议，不兼容 ZCode Desktop 的二进制 RPC/V4。独立部署路径、模型连接块、HTTP 鉴权/限流继续保留；SQLite 文本记忆与 ZCode MEMORY.md 不互换。
+
+## SKILL 配置
+
+在工作区创建 `.zcode/skills/code-review/SKILL.md`：
+
+```markdown
+---
+name: code-review
+description: 审查代码时使用，给出文件位置、风险和修复建议。
+---
+
+先阅读相关源码和测试，再检查正确性、权限与错误处理。
+修改后运行相关测试，汇报实际验证范围。
+```
+
+在服务配置中设置：
+
+```yaml
+features:
+  skill: true
+skills:
+  enabled: true
+  includeInstructions: true
+  metadataBudget: 20000
+  roots: [/srv/shared-skills]
+skill:
+  /srv/project/.zcode/skills/obsolete/SKILL.md:
+    enable: false
+```
+
+发现顺序：显式 `roots` → 当前项目及 Git 祖先（近到远）→ 用户家目录；每层依次搜索 `.zcode/skills`、`.agents/skills`、`.claude/skills`。每个技能目录包含 `SKILL.md`，同名技能以先发现的为准；API 同时返回 shadow diagnostics。单项覆盖使用 **SKILL.md 的绝对路径**，也可放进项目 `.zcode/config.json` 的 `skill` 对象；项目不能改全局 roots 或权限。
+
+默认只向 prompt 注入名称、描述和路径等元数据，预算按字符计算并保留完整 XML 条目；正文按需由模型调用 `skill` 工具加载，最大 100 KiB，并返回技能基目录。`includeInstructions: false` 关闭自动元数据注入，仍允许显式加载；`skills.enabled: false` 或 `features.skill: false` 关闭技能工具与 API。`allowed-tools/model/effort/context/hooks` 等风险 frontmatter 需要对当前内容进行 Workspace Trust 审阅，不能提高工具权限。
+
+```bash
+./agent-core skills
+./agent-core skills load --name code-review
+./agent-core chat --message '/skill code-review 检查当前变更'
+./agent-core trust review
+# 检查返回的声明和 digest 后授权
+./agent-core trust grant --digest '<bundle_digest>'
+```
+
+同样可用 `GET /v1/skills`、`POST /v1/skills/load`（`{"name":"code-review"}`）。命令文件用 `command.<绝对文件路径>.enable` 单项启停；完整示例见 [Skills 与 Slash Commands](docs/commands.md)。
+
+## MCP 配置
+
+在 `agent-core.yaml` 中声明 `mcp.servers`；这些服务配置是显式信任的，启动即连接：
+
+```yaml
+features:
+  mcp: true
+mcp:
+  servers:
+    local-tools:
+      type: stdio
+      command: /usr/local/bin/my-mcp-server
+      args: [--stdio]
+      cwd: /srv/project
+      env:
+        SERVICE_TOKEN: "${SERVICE_TOKEN}"
+      enabled: true
+      alwaysLoad: false
+      timeoutMs: 30000
+    remote-tools:
+      type: http
+      url: https://mcp.example.com/mcp
+      headers:
+        Authorization: "Bearer ${MCP_TOKEN}"
+      timeoutMs: 30000
+    legacy-tools:
+      type: sse
+      url: https://legacy.example.com/sse
+      enabled: false
+```
+
+`stdio` 使用独立 command/args，不经 shell；`env` 叠加到 PATH/HOME/临时目录等白名单。`http` 是 Streamable HTTP，`sse` 是 legacy SSE。`timeoutMs` 默认 30000，控制握手与工具调用；成功握手后取消建连上下文不会误关长连接。`alwaysLoad: true` 让该服务工具始终进入模型工具列表；默认按需发现。工具命名为 `<server>__<tool>`，受共享并发、权限和取消控制。
+
+`headers/env` 支持环境变量展开，`config show` 全部脱敏。显式服务声明允许连接本机/私网 MCP；动态 API 连接默认阻止私网，需要逐服务 `allow_private: true`。跨源重定向仍被拒绝。修改 YAML 后重启；同名服务配置优先于数据库中动态注册的连接。`features.mcp: false` 关闭启动连接和 MCP 管理 API。
+
+项目 `.zcode/config.json` / `zcode.json` 也可声明同结构的 `mcp.servers`，但必须先通过当前声明 bundle 的 Trust 审阅，**授权后重启才连接**，且不能覆盖用户/服务的同名声明。当前服务为单 workspace，共享 MCP 连接；可省略 `isolation` 或使用 `workspace`。OAuth、`isolation: session`、强制固定 `protocolVersion` 暂不实现，配置会报错；省略版本或 `auto` 由 SDK 协商。
+
+```bash
+./agent-core mcp list
+# 动态 API/CLI 使用 transport/config 包装；http 对应 streamable_http
+./agent-core mcp connect --name local-tools --transport stdio \
+  --config '{"command":"/usr/local/bin/my-mcp-server","args":["--stdio"]}'
+./agent-core mcp-serve --config agent-core.yaml --transport stdio
+```
+
+详细协议、进程清理与 Host Callback 示例见 [MCP 文档](docs/mcp.md)。
+
+## WebSocket
+
+连接 `ws://127.0.0.1:3030/ws`。原生客户端可传 Bearer header；浏览器首帧必须在 10 秒内发送 `auth`（token 不放 URL）：
+
+```json
+{"id":"auth-1","method":"auth","params":{"token":"your-token"}}
+{"id":"send-1","method":"session.send","params":{"command_id":"unique-task-uuid","message":"检查项目"}}
+```
+
+发送回执的 `result` 含 `run_id`、`conversation_id`。然后订阅：
+
+```json
+{"id":"sub-1","method":"run.subscribe","params":{"subscription_id":"task-events","run_id":"<run_id>","after":0}}
+```
+
+事件帧包含 `subscription_id` 和 `event`，event 与 HTTP/SSE 使用相同 `event_id/sequence`。保存最后 sequence，断线后再次订阅即可恢复。相同 `command_id` 与内容返回同一 run，不重复执行；不同内容复用 ID 会报错。`run.stop`、`permission.respond`、`input.respond` 与 HTTP 共用处理逻辑，见 [WebSocket 协议](docs/websocket.md)。
 
 ## 文档
 
 - [配置与环境变量](docs/configuration.md)
+- [ZCode 配置逐项对照](docs/zcode-alignment.md)
+- [WebSocket 协议](docs/websocket.md)
 - [Skills 与 Slash Commands](docs/commands.md)
 - [项目配置、Trust、Subagents 与 Workflow](docs/extensions.md)
 - [Web IDE 与快照](docs/web-ide.md)
@@ -197,10 +314,10 @@ internal/llm/           OpenAI 兼容客户端、流式解析、failover
 internal/tool/          注册、schema、权限、发现、进程管理
 internal/tool/builtin/  文件、搜索、Git、终端、网页工具
 internal/mcp/           MCP client/server
-internal/store/         SQLite 迁移、run/event/log、向量存储
+internal/store/         SQLite 迁移、run/event/log、命令去重
 internal/memory/        记忆服务与工具
 internal/compressor/    上下文预算与摘要
-internal/server/        HTTP/SSE、中间件与管理 API
+internal/server/        HTTP/SSE/WebSocket、中间件与管理 API
 deploy/                 systemd、Caddy、容器配置
 docs/                   使用与运维文档
 ```

@@ -1,4 +1,4 @@
-# HTTP API 与 SSE
+# HTTP API、SSE 与 WebSocket
 
 除 `GET /health` 外，配置 `server.auth_token` 后所有接口都需要：
 
@@ -58,7 +58,7 @@ data: {"schema_version":1,"event_id":"...","sequence":4,"conversation_id":"...",
 - `resumed`: checkpoint 恢复开始。
 - `done | error | cancelled`: 每个 run 的唯一成功/失败/取消终态。
 
-每 15 秒发送 `: keep-alive` 注释。事件先持久化再发送，可用 `after=<sequence>` 诊断或补拉；当前没有跨 HTTP 连接的自动 SSE 重放，客户端必须自行保存 cursor 并调用 events API。
+每 15 秒发送 `: keep-alive` 注释。事件先持久化再发送，可用 `after=<sequence>` 诊断或补拉；使用 `GET /v1/runs/{id}/events/stream?after=<sequence>` 或 `Last-Event-ID` 重新订阅。SSE chat 被接受后断线不会取消任务；`X-Run-ID` 返回 run ID，`X-Command-ID` 可作为任务重试去重键。未指定时自动生成。显式 stop 才取消。同步 chat 和交互式 resume 保留原有请求生命周期。
 
 ## 会话与日志
 
@@ -80,9 +80,8 @@ data: {"schema_version":1,"event_id":"...","sequence":4,"conversation_id":"...",
 - `GET/POST /v1/memories`
 - `PUT/DELETE /v1/memories/{id}`
 - `POST /v1/memories/consolidate`
-- `POST /v1/memories/rebuild`
 
-记忆内容、类别、来源和 importance（0–1）可配置。禁用记忆不会进入文本或向量召回。
+记忆内容、类别、来源和 importance（0–1）可配置。禁用记忆不会进入文本召回；已移除 embedding/向量索引。`features.memory: false` 或 `memory.use: false` 时记忆 API 返回 503。
 
 ## 工具与 MCP
 
@@ -111,3 +110,7 @@ MCP 配置见 [mcp.md](mcp.md)。
 - `GET /health`: 公开 liveness，仅表示 HTTP 进程可响应。
 - `GET /ready`: 数据库、workspace、LLM 配置 readiness，失败返回 503。
 - `GET /v1/metrics`: 请求数、5xx 数、平均请求时长、工具/MCP 数量。
+
+## WebSocket
+
+`GET /ws` 提供 AgentCore JSON v1，共用会话、审批与持久事件；鉴权、请求、去重、恢复和方法表见 [WebSocket 协议](websocket.md)。`GET /api/server-info` 返回明确的独立协议能力。

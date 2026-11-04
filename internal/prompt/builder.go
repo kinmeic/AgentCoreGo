@@ -2,7 +2,6 @@ package prompt
 
 import (
 	"agent-core/internal/model"
-	"agent-core/internal/store/vector"
 	"strings"
 )
 
@@ -19,7 +18,7 @@ func NewBuilder() *Builder {
 }
 
 // Build constructs the full system prompt with context.
-func (b *Builder) Build(soulContent string, memories []vector.SearchResult, toolNames []string) string {
+func (b *Builder) Build(soulContent string, memories []model.MemorySearchResult, toolNames []string) string {
 	var sb strings.Builder
 
 	// Base prompt
@@ -57,7 +56,7 @@ func (b *Builder) Build(soulContent string, memories []vector.SearchResult, tool
 }
 
 // BuildSystemMessage creates the system message for the conversation.
-func (b *Builder) BuildSystemMessage(soulContent string, memories []vector.SearchResult, toolNames []string) model.Message {
+func (b *Builder) BuildSystemMessage(soulContent string, memories []model.MemorySearchResult, toolNames []string) model.Message {
 	return model.Message{
 		Role:    model.RoleSystem,
 		Content: b.Build(soulContent, memories, toolNames),

@@ -155,6 +155,7 @@ var schemaMigrations = []schemaMigration{
 			`CREATE INDEX IF NOT EXISTS idx_workflow_nodes_cache ON workflow_nodes(run_id, node_id, input_hash, status)`,
 		},
 	},
+	{version: 7, sql: []string{`DROP TABLE IF EXISTS vector_store`, `CREATE TABLE IF NOT EXISTS accepted_commands(command_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, run_id TEXT NOT NULL, conversation_id TEXT NOT NULL)`}},
 }
 
 func migrationChecksum(m schemaMigration) string {

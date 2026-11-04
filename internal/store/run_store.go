@@ -28,7 +28,14 @@ func (s *SQLite) SaveRun(run *model.Run) error {
 		id, conversation_id, status, input, source, metadata, iteration, reply, error, usage,
 		created_at, updated_at, finished_at, parent_run_id, root_run_id, depth, kind, spec
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(id) DO UPDATE SET status=excluded.status, iteration=excluded.iteration,
+	ON CONFLICT(id) DO UPDATE SET
+ spec=CASE WHEN runs.status='pending' THEN excluded.spec ELSE runs.spec END,
+ parent_run_id=CASE WHEN runs.status='pending' THEN excluded.parent_run_id ELSE runs.parent_run_id END,
+ root_run_id=CASE WHEN runs.status='pending' THEN excluded.root_run_id ELSE runs.root_run_id END,
+ depth=CASE WHEN runs.status='pending' THEN excluded.depth ELSE runs.depth END,
+ kind=CASE WHEN runs.status='pending' THEN excluded.kind ELSE runs.kind END,
+ metadata=CASE WHEN runs.status='pending' THEN excluded.metadata ELSE runs.metadata END,
+ status=excluded.status, iteration=excluded.iteration,
 		reply=excluded.reply, error=excluded.error, usage=excluded.usage,
 		updated_at=excluded.updated_at, finished_at=excluded.finished_at`,
 		run.ID, run.ConversationID, run.Status, run.Input, run.Source, string(metadata),

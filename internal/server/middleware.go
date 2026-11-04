@@ -45,8 +45,8 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, Last-Event-ID")
-			w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, X-Next-Cursor")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, X-Command-ID, Last-Event-ID")
+			w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, X-Run-ID, X-Next-Cursor")
 			w.Header().Set("Access-Control-Max-Age", "600")
 		}
 		if r.Method == http.MethodOptions {

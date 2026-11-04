@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"sort"
+	"unicode/utf8"
 )
 
 // RenderMetadata renders active (non-shadowed) skills as deterministic XML for
@@ -59,4 +60,17 @@ func writeElement(output *bytes.Buffer, name, value string) {
 	output.WriteString("</")
 	output.WriteString(name)
 	output.WriteString(">\n")
+}
+
+// RenderMetadataBudget keeps complete XML entries within a Unicode character budget.
+func (c Catalog) RenderMetadataBudget(budget int) string {
+	var selected []Skill
+	for _, skill := range c.Skills {
+		candidate := append(append([]Skill(nil), selected...), skill)
+		if utf8.RuneCountInString(RenderMetadata(candidate)) > budget {
+			continue
+		}
+		selected = candidate
+	}
+	return RenderMetadata(selected)
 }

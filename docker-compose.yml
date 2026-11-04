@@ -4,11 +4,11 @@ services:
     image: agent-core:local
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8900:8900"
+      - "127.0.0.1:3030:3030"
     environment:
       AUTH_TOKEN: ${AUTH_TOKEN:?set AUTH_TOKEN}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:?set LLM_MODEL}
     volumes:
       - agent-data:/data
       - agent-workspace:/workspace

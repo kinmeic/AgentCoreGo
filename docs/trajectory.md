@@ -1,22 +1,10 @@
 # model-io 与自动化轨迹
 
-## 两种采集模式
+## 默认诊断采集
 
-`telemetry.mode` 只有两种：
+运行服务固定使用 redacted 脱敏诊断采集，目录为 `storage.dir/model-io`。队列/文件大小/保留数是内部实现常量，不再暴露 ZCode 没有的 telemetry 配置旋钮。修改旧配置时删除 telemetry 块。
 
-- `redacted`：默认诊断模式。HTTP headers、常见 secret 字段和 inline media 脱敏；有界异步队列，记录 dropped/truncated，Close 时 flush。
-- `training`：显式训练模式。同步持久化完整 provider wire，目录 0700、文件 0600。任何写入失败或截断都会令样本失败或 `capture_complete=false`，禁止进入训练集。
-
-```yaml
-telemetry:
-  mode: redacted
-  directory: ./data/model-io
-  queue_size: 256
-  max_artifact_bytes: 4194304
-  retention_files: 100
-```
-
-原始 prompt、源码和 tool 内容不会进入普通 FTS 或 HTTP 访问日志。训练采集属于敏感数据操作，必须单独授权、加密备份并设置删除策略。
+代码库仍保留显式 training Recorder 供隔离 benchmark 使用，不通过服务 YAML 开启。HTTP headers、常见 secret 字段和 inline media 会在默认模式脱敏；队列有界、记录 dropped/truncated，关闭时 flush。
 
 ## 采集内容
 
@@ -26,7 +14,7 @@ telemetry:
 - 原始 request JSON、response JSON 或原始 SSE artifact。
 - headers（脱敏）、HTTP status、开始/结束时间、latency、finish reason、usage 和错误。
 
-Purpose 包括 `main/compact/title/subagent/workflow/embedding`，避免把标题、压缩或子任务请求误当成主回答。`<think>` 过滤前的原始内容仅在采集策略允许时保留，conversation log 不作为 raw model-io。
+Purpose 包括 `main/compact/title/subagent/workflow`，避免把标题、压缩或子任务请求误当成主回答。`<think>` 过滤前的原始内容仅在采集策略允许时保留，conversation log 不作为 raw model-io。
 
 工具记录包含 input/output、能力、审批、耗时和状态。文件变更包含 operation、revision、增删行和 diff artifact。
 

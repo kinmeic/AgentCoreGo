@@ -62,12 +62,18 @@ func (s *Server) resolveChat(ctx context.Context, req model.ChatRequest) (model.
 		}
 		return req, &commandResult{Command: name, Action: "conversation", Data: conversation, Reply: "Conversation loaded"}, nil
 	case "compact":
+		if !s.cfg.Features.Compact {
+			return req, nil, fmt.Errorf("features.compact is disabled")
+		}
 		if req.ConversationID == "" {
 			return req, nil, fmt.Errorf("conversation_id is required for /compact")
 		}
 		summary, err := s.orchestrator.CompactConversation(ctx, req.ConversationID, args)
 		return req, &commandResult{Command: name, Action: "compact", Data: map[string]string{"summary": summary}, Reply: "Conversation compacted"}, err
 	case "skill":
+		if !s.cfg.Features.Skill || !s.cfg.Skills.Enabled {
+			return req, nil, fmt.Errorf("skills are disabled")
+		}
 		if args == "" {
 			return req, &commandResult{Command: name, Action: "skills", Data: s.services.Skills.Discover(), Reply: "Skills returned"}, nil
 		}
@@ -99,6 +105,9 @@ func (s *Server) resolveChat(ctx context.Context, req model.ChatRequest) (model.
 	case "dwf":
 		return s.workflowCommand(ctx, req, name, "list", args)
 	case "mcp":
+		if !s.cfg.Features.MCP {
+			return req, nil, fmt.Errorf("MCP is disabled")
+		}
 		if args == "" || args == "list" || args == "status" {
 			return req, &commandResult{Command: name, Action: "mcp", Data: s.mcpManager.ListServers(), Reply: "MCP servers returned"}, nil
 		}
@@ -112,10 +121,16 @@ func (s *Server) resolveChat(ctx context.Context, req model.ChatRequest) (model.
 	case "trust":
 		return s.trustCommand(ctx, req, args)
 	case "snapshot", "rewind":
+		if !s.cfg.Features.Rewind {
+			return req, nil, fmt.Errorf("rewind is disabled")
+		}
 		return s.snapshotCommand(ctx, req, name, args)
 	case "fork":
 		return s.forkCommand(req, args)
 	case "agents":
+		if !s.cfg.Features.Subagent {
+			return req, nil, fmt.Errorf("subagents are disabled")
+		}
 		parts := strings.Fields(args)
 		if len(parts) == 2 && parts[0] == "stop" {
 			if !s.services.Subagents.Stop(parts[1]) {
@@ -175,8 +190,8 @@ func (s *Server) conversationPreference(req model.ChatRequest, name, args string
 		}
 		updates["locale"] = args
 	case "mode":
-		if permissionRank(args) < 0 || permissionRank(args) > permissionRank(s.cfg.Tools.ApprovalMode) {
-			return req, nil, fmt.Errorf("mode is invalid or exceeds the server limit")
+		if permissionRank(args) < 0 {
+			return req, nil, fmt.Errorf("mode is invalid")
 		}
 		updates["mode"] = args
 	case "model":
@@ -300,7 +315,7 @@ func splitCommandArgs(input string) (string, string) {
 }
 func permissionRank(mode string) int {
 	switch mode {
-	case "plan":
+	case "plan", "auto":
 		return 0
 	case "build", "smart":
 		return 1

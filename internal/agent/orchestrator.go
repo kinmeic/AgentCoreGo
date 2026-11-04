@@ -11,7 +11,6 @@ import (
 	"agent-core/internal/sandbox"
 	"agent-core/internal/skills"
 	"agent-core/internal/store"
-	"agent-core/internal/store/vector"
 	"agent-core/internal/telemetry"
 	"agent-core/internal/tool"
 	"agent-core/internal/tool/builtin"
@@ -287,12 +286,20 @@ func (o *Orchestrator) executeRun(ctx context.Context, run *model.Run, cp *Check
 			return err
 		}
 	}
-	budget := NewIterationBudget(o.cfg.LLM.MaxToolIterations, o.cfg.LLM.MaxRunTokens)
+	iterations := o.cfg.LLM.MaxToolIterations
+	// ZCode runtime/methods/subagent.ts 对子代理默认使用 4 turns；主循环无限制。
+	if iterations == 0 && run.Spec.Kind == model.RunKindSubagent {
+		iterations = 4
+	}
+	budget := NewIterationBudget(iterations, o.cfg.LLM.MaxRunTokens)
 	budget.currentIteration = cp.Iteration
 	budget.totalTokens = cp.TotalTokens
 	for {
 		if len(cp.Pending) > 0 {
 			if err := o.executePendingTools(ctx, run, cp, interactive, emitter); err != nil {
+				return err
+			}
+			if err := o.warnModelAnomalies(cp, emitter); err != nil {
 				return err
 			}
 			continue
@@ -304,6 +311,12 @@ func (o *Orchestrator) executeRun(ctx context.Context, run *model.Run, cp *Check
 			return err
 		}
 		cp.Iteration = budget.CurrentIteration()
+		if o.cfg.Features.Compact {
+			compressed := o.comp.Compress(ctx, cp.Messages, o.llmProvider.MaxContextWindow(), o.toolRegistry.ToolDefinitions())
+			if compressed.ShouldCompress {
+				cp.Messages = repairToolCallPairing(compressed.Messages)
+			}
+		}
 		if err := emitter.emit(model.StreamEvent{Type: "thinking", Iteration: budget.CurrentIteration() + 1}); err != nil {
 			return err
 		}
@@ -311,7 +324,7 @@ func (o *Orchestrator) executeRun(ctx context.Context, run *model.Run, cp *Check
 			RootID: run.Spec.RootRunID, ParentID: run.Spec.ParentRunID, TraceID: run.Spec.TraceID,
 			Purpose: purposeForRunKind(run.Spec.Kind)}), cp, interactive, emitter)
 		if err != nil {
-			if classifyAndLog(err) {
+			if classifyAndLog(err) && o.cfg.Features.Compact {
 				budget.RecordIteration(0)
 				compressed := o.emergencyCompress(ctx, cp.Messages)
 				if len(compressed) >= len(cp.Messages) {
@@ -681,8 +694,8 @@ func (o *Orchestrator) buildMessages(ctx context.Context, convID string, userMsg
 			visibleLogs = append(visibleLogs, entry)
 		}
 	}
-	var memories []vector.SearchResult
-	if o.memService != nil {
+	var memories []model.MemorySearchResult
+	if o.memService != nil && o.cfg.Features.Memory && o.cfg.Memory.Use {
 		memories, err = o.memService.Search(ctx, userMsg.Content, 5)
 		if err != nil {
 			log.Printf("[memory] recall degraded: %v", err)
@@ -690,8 +703,8 @@ func (o *Orchestrator) buildMessages(ctx context.Context, convID string, userMsg
 	}
 	soulContent, _ := sandbox.ReadSoulFile(o.cfg.Workspace.Path, o.cfg.Workspace.SoulFile)
 	systemMessage := o.promptBuilder.BuildSystemMessage(soulContent, memories, o.toolRegistry.Names())
-	if o.skillLoader != nil {
-		if metadata := o.skillLoader.Discover().RenderMetadata(); metadata != "" {
+	if o.skillLoader != nil && o.cfg.Features.Skill && o.cfg.Skills.Enabled && o.cfg.Skills.IncludeInstructions {
+		if metadata := o.skillLoader.Discover().RenderMetadataBudget(o.cfg.Skills.MetadataBudget); metadata != "" {
 			systemMessage.Content += "\n\n## Available Skills\n" + metadata
 		}
 	}
@@ -703,6 +716,9 @@ func (o *Orchestrator) buildMessages(ctx context.Context, convID string, userMsg
 		messages = append(messages, conversationLogMessage(entry))
 	}
 	messages = append(messages, userMsg)
+	if !o.cfg.Features.Compact {
+		return repairToolCallPairing(messages), nil
+	}
 	definitions := o.toolRegistry.ToolDefinitions()
 	result := o.comp.Compress(ctx, messages, o.llmProvider.MaxContextWindow(), definitions)
 	if result.ShouldCompress && len(visibleLogs) > 40 {
@@ -804,10 +820,8 @@ func (o *Orchestrator) StopRun(runID string) bool {
 	if active == nil {
 		return false
 	}
+	// Terminal processes inherit the exact run context and cancel their process group.
 	active.cancel()
-	if o.processRegistry != nil {
-		o.processRegistry.KillByConversation(active.convID)
-	}
 	return true
 }
 
@@ -1196,4 +1210,9 @@ func (c *toolCallCollector) build() []model.ToolCall {
 			Function: model.ToolFunction{Name: builder.name, Arguments: builder.arguments.String()}})
 	}
 	return calls
+}
+
+// StartAcceptedRun executes a server-owned root task with a durable admission ID.
+func (o *Orchestrator) StartAcceptedRun(ctx context.Context, req model.ChatRequest, runID string) (*model.ChatResponse, error) {
+	return o.startRunWithSpec(ctx, req, o.newRootSpec(runID), runID, true, nil)
 }

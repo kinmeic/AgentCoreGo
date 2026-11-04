@@ -94,3 +94,9 @@ timestamp + "\n" + nonce + "\n" + raw_request_body
 Host 必须使用相同 secret 计算并常量时间比较，检查 timestamp 允许窗口并缓存 nonce 防重放。响应限 1 MiB；非 200 不回显响应正文。
 
 成功响应可为 `{"result":"text"}`、错误 `{"error":"text"}`，或原始文本。Callback 注册持久化并在启动时恢复；secret 位于数据库中，数据库文件必须仅服务账号可读。`allow_private` 同样逐工具显式配置。
+
+## 启动声明与动态注册
+
+服务 YAML 使用 ZCode 同名 `mcp.servers.<name>`，完整 stdio/http/sse 示例与优先级见 [README MCP 配置](../README.md#mcp-配置)。这里的 `type: http` 对应动态 API 的 `transport: streamable_http`。声明中的 `timeoutMs` 默认 30000，作用于握手与工具执行；`alwaysLoad` 控制模型工具列表是否始终包含该服务工具。
+
+用户/服务配置声明属于显式信任来源，可访问私网；动态 API 仍需逐服务 allow_private。项目声明经 Workspace Trust 授权后重启连接。当前仅 workspace 共享连接和 SDK 自动版本协商，OAuth、session isolation、固定协议版本配置拒绝加载。

@@ -208,7 +208,6 @@ func (r *Runner) executeAgent(ctx context.Context, plan *Plan, promptText, works
 	cfg.Workspace.Path = workspace
 	cfg.Tools.WorkDir = workspace
 	cfg.Store.DBPath = filepath.Join(home, "agent.db")
-	cfg.Store.VectorBackend = "none"
 	cfg.LLM.BaseURL = plan.Manifest.BaseURL
 	cfg.LLM.APIFormat = plan.Manifest.APIFormat
 	cfg.LLM.APIKey = plan.Manifest.APIKey
@@ -236,7 +235,7 @@ func (r *Runner) executeAgent(ctx context.Context, plan *Plan, promptText, works
 		registered, _ := registry.Get(name)
 		return permissions.Authorize(ctx, registered, args)
 	})
-	memService := memory.NewService(db, nil, nil, cfg.Memory)
+	memService := memory.NewService(db, cfg.Memory)
 	orchestrator := agent.NewOrchestrator(provider, registry, processes, db, memService,
 		compressor.NewCompressor(cfg.Compression, compressor.NewProviderSummarizer(provider)), prompt.NewBuilder(), cfg)
 	orchestrator.SetCheckpointStore(agent.NewSQLiteCheckpointStore(db))

@@ -25,6 +25,11 @@ type Loader struct {
 // NewLoader constructs a skill loader.
 func NewLoader(options Options) *Loader {
 	options.Roots = append([]string(nil), options.Roots...)
+	overrides := make(map[string]bool, len(options.Overrides))
+	for path, enabled := range options.Overrides {
+		overrides[filepath.Clean(path)] = enabled
+	}
+	options.Overrides = overrides
 	return &Loader{options: options}
 }
 
@@ -38,6 +43,9 @@ func (l *Loader) Discover() Catalog {
 		paths := skillFiles(root, &diagnostics)
 		for _, path := range paths {
 			path = filepath.Clean(path)
+			if enabled, exists := l.options.Overrides[path]; exists && !enabled {
+				continue
+			}
 			if seenPaths[path] {
 				continue
 			}

@@ -1,0 +1,469 @@
+{
+  "reference": {
+    "project": "ZCode",
+    "version": "3.17.2",
+    "commit": "a9fe401e"
+  },
+  "previousOptions": [
+    {
+      "key": "server.host",
+      "previous": "\"127.0.0.1\"",
+      "category": "服务保留",
+      "target": "server.host",
+      "result": "127.0.0.1；部署监听边界"
+    },
+    {
+      "key": "server.port",
+      "previous": "8900",
+      "category": "映射对齐",
+      "target": "server.port",
+      "result": "3030；对齐 ZCode HTTP 监听默认值"
+    },
+    {
+      "key": "server.auth_token",
+      "previous": "\"${AUTH_TOKEN}\"",
+      "category": "服务保留",
+      "target": "server.auth_token",
+      "result": "空；独立服务 Bearer 鉴权"
+    },
+    {
+      "key": "server.max_request_bytes",
+      "previous": "1048576",
+      "category": "服务保留",
+      "target": "server.max_request_bytes",
+      "result": "1048576；HTTP/WS 请求上限"
+    },
+    {
+      "key": "server.cors_origins",
+      "previous": "[] # Exact origins only, for example https://app.example.com",
+      "category": "服务保留",
+      "target": "server.cors_origins",
+      "result": "[]；精确 Origin 白名单"
+    },
+    {
+      "key": "server.rate_limit_per_minute",
+      "previous": "300",
+      "category": "服务保留",
+      "target": "server.rate_limit_per_minute",
+      "result": "300；独立 HTTP 防护"
+    },
+    {
+      "key": "server.max_concurrent_runs",
+      "previous": "10",
+      "category": "服务保留",
+      "target": "server.max_concurrent_runs",
+      "result": "10；独立服务并发接收边界"
+    },
+    {
+      "key": "server.log_format",
+      "previous": "\"text\" # text or json",
+      "category": "映射对齐",
+      "target": "logging.format",
+      "result": "text；同名运行配置"
+    },
+    {
+      "key": "llm.api_format",
+      "previous": "\"openai\" # openai (Chat Completions) or anthropic (Messages)",
+      "category": "服务保留",
+      "target": "llm.api_format",
+      "result": "openai；独立 provider 连接块，另支持 anthropic"
+    },
+    {
+      "key": "llm.base_url",
+      "previous": "\"https://api.openai.com/v1\"",
+      "category": "服务保留",
+      "target": "llm.base_url",
+      "result": "OpenAI /v1；独立 provider 连接"
+    },
+    {
+      "key": "llm.api_key",
+      "previous": "\"${LLM_API_KEY}\"",
+      "category": "服务保留",
+      "target": "llm.api_key",
+      "result": "空；环境注入"
+    },
+    {
+      "key": "llm.model",
+      "previous": "\"gpt-4o\"",
+      "category": "映射对齐",
+      "target": "llm.model",
+      "result": "空；不预选 gpt-4o，由用户指定 provider 模型"
+    },
+    {
+      "key": "llm.context_window",
+      "previous": "128000",
+      "category": "映射对齐",
+      "target": "llm.context_window",
+      "result": "200000；ZCode fallback context，按实际模型设置"
+    },
+    {
+      "key": "llm.max_tool_iterations",
+      "previous": "15",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "主 Agent 无工具迭代硬停止"
+    },
+    {
+      "key": "llm.max_retries",
+      "previous": "3",
+      "category": "映射对齐",
+      "target": "ZCODE_MODEL_RETRY_MAX_RETRIES",
+      "result": "10 次重试；2s/2倍/60s/jitter"
+    },
+    {
+      "key": "llm.temperature",
+      "previous": "0.7",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "不暴露全局采样温度，采用 provider 默认值"
+    },
+    {
+      "key": "llm.max_output_tokens",
+      "previous": "4096",
+      "category": "映射对齐",
+      "target": "llm.max_output_tokens",
+      "result": "32000；模型能力 fallback，压缩预留最多21000"
+    },
+    {
+      "key": "llm.max_run_tokens",
+      "previous": "100000",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "主 Agent 无累计 token 硬停止"
+    },
+    {
+      "key": "llm.run_timeout_seconds",
+      "previous": "1800",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "主 Agent 无总时长硬停止；改用流空闲超时与取消"
+    },
+    {
+      "key": "llm.reasoning_effort",
+      "previous": "\"\" # Optional; only for compatible providers",
+      "category": "服务保留",
+      "target": "llm.reasoning_effort",
+      "result": "空；模型能力属性"
+    },
+    {
+      "key": "llm.fallbacks",
+      "previous": "[]",
+      "category": "服务保留",
+      "target": "llm.fallbacks",
+      "result": "[]；独立多 provider 接入"
+    },
+    {
+      "key": "embedding.base_url",
+      "previous": "\"https://api.openai.com/v1\"",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无启用的 ZCode embedding 召回；删除客户端与配置"
+    },
+    {
+      "key": "embedding.api_key",
+      "previous": "\"${EMBEDDING_API_KEY}\"",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无启用的 ZCode embedding 召回；删除客户端与配置"
+    },
+    {
+      "key": "embedding.model",
+      "previous": "\"text-embedding-3-small\"",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无启用的 ZCode embedding 召回；删除客户端与配置"
+    },
+    {
+      "key": "embedding.dimensions",
+      "previous": "1536",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无启用的 ZCode embedding 召回；删除客户端与配置"
+    },
+    {
+      "key": "store.db_path",
+      "previous": "\"./data/agent.db\"",
+      "category": "服务保留",
+      "target": "storage.sessionDbPath",
+      "result": "./data/agent.db；刻意不打开桌面 DB"
+    },
+    {
+      "key": "store.vector_backend",
+      "previous": "\"sqlite\" # sqlite, legacy alias sqlite-vec, or none",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "删除向量存储；旧表经备份后迁移删除"
+    },
+    {
+      "key": "workspace.path",
+      "previous": "\"./workspace\" # Single source for SOUL.md and all workspace tools",
+      "category": "服务保留",
+      "target": "workspace.path",
+      "result": "当前目录；独立服务固定 workspace"
+    },
+    {
+      "key": "workspace.soul_file",
+      "previous": "\"SOUL.md\"",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "固定使用工作区 AGENTS.md"
+    },
+    {
+      "key": "compression.threshold_percent",
+      "previous": "0.50",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；按 context/output 预算自动压缩"
+    },
+    {
+      "key": "compression.protect_first_n",
+      "previous": "3",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；按 context/output 预算自动压缩"
+    },
+    {
+      "key": "compression.protect_last_n",
+      "previous": "20",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；按 context/output 预算自动压缩"
+    },
+    {
+      "key": "compression.target_ratio",
+      "previous": "0.20",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；按 context/output 预算自动压缩"
+    },
+    {
+      "key": "tools.approval_mode",
+      "previous": "\"smart\" # smart/build, plan, edit, guarded, or yolo",
+      "category": "映射对齐",
+      "target": "permission.mode",
+      "result": "build；不再使用 smart 别名作为公开默认"
+    },
+    {
+      "key": "tools.terminal_enabled",
+      "previous": "true",
+      "category": "服务保留",
+      "target": "server.terminalEnabled",
+      "result": "true；非 loopback 必须关闭"
+    },
+    {
+      "key": "tools.progressive_tools",
+      "previous": "true",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；按需发现保持内部实现"
+    },
+    {
+      "key": "tools.tool_search_threshold",
+      "previous": "10",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；按需发现保持内部实现"
+    },
+    {
+      "key": "tools.enabled_toolsets",
+      "previous": "[] # Empty enables core, web, memory, mcp, and host_callback",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；按需发现保持内部实现"
+    },
+    {
+      "key": "memory.capacity_limit",
+      "previous": "200",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应容量/合并策略旋钮；只公开 memory.use"
+    },
+    {
+      "key": "memory.consolidation_threshold",
+      "previous": "160",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应容量/合并策略旋钮；只公开 memory.use"
+    },
+    {
+      "key": "memory.auto_nudge",
+      "previous": "true",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应容量/合并策略旋钮；只公开 memory.use"
+    },
+    {
+      "key": "memory.auto_consolidate",
+      "previous": "false",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应容量/合并策略旋钮；只公开 memory.use"
+    },
+    {
+      "key": "security.policies",
+      "previous": "[]",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "用 permission.allowedTools/disallowedTools；内部 deny 优先仍保留"
+    },
+    {
+      "key": "features.skills",
+      "previous": "true",
+      "category": "映射对齐",
+      "target": "features.skill",
+      "result": "true；另受 skills.enabled 控制"
+    },
+    {
+      "key": "features.commands",
+      "previous": "true",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "使用 command.<绝对路径>.enable"
+    },
+    {
+      "key": "features.subagents",
+      "previous": "true",
+      "category": "映射对齐",
+      "target": "features.subagent",
+      "result": "true；子代理默认4回合"
+    },
+    {
+      "key": "features.workflow",
+      "previous": "true",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "ZCode 没有此 runtime feature；Go DAG 扩展保留内部实现"
+    },
+    {
+      "key": "features.model_io",
+      "previous": "true",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "ZCode 没有此 runtime feature；默认脱敏诊断采集"
+    },
+    {
+      "key": "ui.locale",
+      "previous": "\"zh-CN\" # auto, en-US, or zh-CN",
+      "category": "映射对齐",
+      "target": "ui.locale",
+      "result": "en-US"
+    },
+    {
+      "key": "skills.roots",
+      "previous": "[] # Additional directories containing */SKILL.md",
+      "category": "映射对齐",
+      "target": "skills.roots",
+      "result": "[]"
+    },
+    {
+      "key": "skills.metadata_budget",
+      "previous": "8192",
+      "category": "映射对齐",
+      "target": "skills.metadataBudget",
+      "result": "20000 字符"
+    },
+    {
+      "key": "commands.roots",
+      "previous": "[] # Additional directories containing Markdown commands",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；标准命令目录与内部文件上限"
+    },
+    {
+      "key": "commands.metadata_budget",
+      "previous": "8192",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；标准命令目录与内部文件上限"
+    },
+    {
+      "key": "commands.max_command_bytes",
+      "previous": "100000",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；标准命令目录与内部文件上限"
+    },
+    {
+      "key": "workflow.enabled",
+      "previous": "true",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；Go DAG 实现常量，默认无总时长/调用次数硬停止"
+    },
+    {
+      "key": "workflow.roots",
+      "previous": "[] # Declarative YAML/JSON DAG definitions only",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；Go DAG 实现常量，默认无总时长/调用次数硬停止"
+    },
+    {
+      "key": "workflow.max_nodes",
+      "previous": "100",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；Go DAG 实现常量，默认无总时长/调用次数硬停止"
+    },
+    {
+      "key": "workflow.max_concurrency",
+      "previous": "4",
+      "category": "映射对齐",
+      "target": "toolConcurrency.maxConcurrency",
+      "result": "10；共享工具/Workflow 并发"
+    },
+    {
+      "key": "workflow.max_agent_calls",
+      "previous": "50",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；Go DAG 实现常量，默认无总时长/调用次数硬停止"
+    },
+    {
+      "key": "workflow.timeout_seconds",
+      "previous": "1800",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；Go DAG 实现常量，默认无总时长/调用次数硬停止"
+    },
+    {
+      "key": "telemetry.mode",
+      "previous": "\"redacted\" # redacted diagnostics or explicit training capture",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；固定脱敏诊断，storage.dir/model-io"
+    },
+    {
+      "key": "telemetry.directory",
+      "previous": "\"./data/model-io\"",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；固定脱敏诊断，storage.dir/model-io"
+    },
+    {
+      "key": "telemetry.queue_size",
+      "previous": "256",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；固定脱敏诊断，storage.dir/model-io"
+    },
+    {
+      "key": "telemetry.max_artifact_bytes",
+      "previous": "4194304",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；固定脱敏诊断，storage.dir/model-io"
+    },
+    {
+      "key": "telemetry.retention_files",
+      "previous": "100",
+      "category": "移除公开项",
+      "target": "—",
+      "result": "无对应 runtime 旋钮；固定脱敏诊断，storage.dir/model-io"
+    }
+  ],
+  "counts": {
+    "服务保留": 14,
+    "映射对齐": 13,
+    "移除公开项": 38
+  }
+}

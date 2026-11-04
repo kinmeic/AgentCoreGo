@@ -32,7 +32,7 @@ go build -trimpath ./cmd/agent-core
 - **工具**：schema 拒绝、名称冲突、内建删除保护、输出限制、toolset、渐进发现、审批重复响应。
 - **文件/沙箱**：revision/stale write、权限保留、glob/grep、路径逃逸、已有/祖先符号链接。
 - **进程**：按 conversation 关联并终止 Unix 进程组，最终 race 通过。
-- **记忆**：query 文本检索、容量、consolidation、disabled 向量过滤。
+- **记忆**：query 文本检索、容量、consolidation、disabled 文本记忆过滤。
 - **压缩**：Unicode/tool 预算、fallback 标记、关键目标/错误保留、极短输入。
 - **HTTP/CLI**：鉴权、严格 JSON、CORS、readiness、SSE frame、限流、审批端到端。
 - **MCP/Callback**：三传输、HMAC、响应大小、私网策略和会话生命周期。

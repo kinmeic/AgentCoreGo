@@ -39,7 +39,7 @@ journalctl -u agent-core -f
 ```caddyfile
 example.com {
     handle_path /agent-core/* {
-        reverse_proxy http://127.0.0.1:8900 {
+        reverse_proxy http://127.0.0.1:3030 {
             flush_interval -1
         }
     }
@@ -73,7 +73,7 @@ docker compose up -d
 - `/health`: liveness，无需鉴权。
 - `/ready`: DB/workspace/LLM 配置检查，需鉴权，失败 503。
 - `/v1/metrics`: 请求数、5xx、平均时长、工具/MCP 数量。
-- `server.log_format: json`: JSON 访问日志，包含 request ID/method/path/status/duration，不记录 query。
+- `logging.format: json`: JSON 访问日志，包含 request ID/method/path/status/duration，不记录 query。
 
 关联排障时保存 `request_id/conversation_id/run_id/tool_call_id`。doctor 输出不包含 API key；`config show` 也脱敏。
 

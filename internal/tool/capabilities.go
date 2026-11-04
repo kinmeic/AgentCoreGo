@@ -15,6 +15,7 @@ type Capabilities struct {
 	ConcurrentSafe  bool          `json:"concurrent_safe"`
 	SideEffectScope string        `json:"side_effect_scope"`
 	RiskLevel       string        `json:"risk_level"`
+	AlwaysAsk       bool          `json:"always_ask,omitempty"`
 	NeedsApproval   bool          `json:"needs_approval"`
 	Timeout         time.Duration `json:"timeout"`
 	MaxOutputBytes  int           `json:"max_output_bytes"`

@@ -17,6 +17,7 @@ import (
 // Client provides access to OpenAI Chat Completions and Anthropic Messages APIs.
 // It implements the Provider interface.
 type Client struct {
+	initErr    error
 	cfg        config.LLMConfig
 	httpClient *http.Client
 	recorder   *telemetry.Recorder
@@ -34,7 +35,7 @@ func NewClient(cfg config.LLMConfig) *Client {
 		cfg.APIFormat = config.APIFormatOpenAI
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = 2 * time.Minute
+	initErr := configureTransport(cfg, transport)
 	httpClient := &http.Client{Transport: transport}
 	if cfg.APIFormat == config.APIFormatAnthropic {
 		// net/http does not treat x-api-key as a sensitive redirect header.
@@ -49,7 +50,7 @@ func NewClient(cfg config.LLMConfig) *Client {
 			return nil
 		}
 	}
-	return &Client{cfg: cfg, httpClient: httpClient}
+	return &Client{cfg: cfg, httpClient: httpClient, initErr: initErr}
 }
 
 // Name returns the provider identifier.
@@ -275,6 +276,12 @@ func (c *Client) doRequest(ctx context.Context, reqBody completionRequest) (*htt
 
 // doJSONRequest shares transport, retries and wire capture across API formats.
 func (c *Client) doJSONRequest(ctx context.Context, endpoint string, reqBody any, stream bool) (*http.Response, error) {
+	if c.initErr != nil {
+		return nil, c.initErr
+	}
+	if c.cfg.Model == "" {
+		return nil, fmt.Errorf("llm.model is not configured")
+	}
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -282,30 +289,38 @@ func (c *Client) doJSONRequest(ctx context.Context, endpoint string, reqBody any
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(attempt*attempt) * time.Second
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
-			}
+			backoff := c.retryDelay(attempt)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-time.After(backoff):
 			}
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(jsonData))
+		requestCtx, requestCancel := context.WithCancel(ctx)
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(jsonData))
 		if err != nil {
+			requestCancel()
 			return nil, fmt.Errorf("create request: %w", err)
 		}
 		req.Header = c.requestHeaders()
 		startedAt := time.Now()
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			requestCancel()
 			lastErr = fmt.Errorf("http request: %w", err)
 			if captureErr := c.capture(ctx, attempt+1, startedAt, jsonData, nil, nil, false, lastErr); captureErr != nil {
 				return nil, captureErr
 			}
 			continue
 		}
+		idleMs := c.cfg.StreamIdleTimeoutMs
+		if !stream {
+			idleMs = c.cfg.RequestTimeoutMs
+		}
+		if idleMs <= 0 {
+			idleMs = config.DefaultModelStreamIdleTimeoutMs
+		}
+		resp.Body = newIdleBody(resp.Body, time.Duration(idleMs)*time.Millisecond, requestCancel)
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 			resp.Body.Close()

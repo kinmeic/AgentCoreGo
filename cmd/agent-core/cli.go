@@ -34,7 +34,7 @@ func newAPIClient(baseURL, token string) *apiClient {
 func clientFlags(set *flag.FlagSet) (*string, *string) {
 	baseURL := os.Getenv("AGENT_CORE_URL")
 	if baseURL == "" {
-		baseURL = "http://127.0.0.1:8900"
+		baseURL = "http://127.0.0.1:3030"
 	}
 	return set.String("url", baseURL, "AgentCore base URL"), set.String("token", os.Getenv("AUTH_TOKEN"), "API bearer token")
 }

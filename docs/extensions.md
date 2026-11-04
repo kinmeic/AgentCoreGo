@@ -8,7 +8,7 @@
 内置默认 → ~/.agent-core/config.yaml → 服务 YAML → 项目配置 → 环境变量
 ```
 
-项目支持 `.agent-core/config.yaml`、`.zcode/config.json`、`zcode.json` 的可控子集：模型、effort、权限模式、UI、Skills、Commands 和 Workflow。项目不能覆盖监听地址、token、数据库、workspace root、密钥或安全 deny，也不能把权限升级为更高风险模式。每个 run 固定 RunSpec，不随运行中文件编辑改变。
+项目支持 `.agent-core/config.yaml`、`.zcode/config.json`、`zcode.json` 的可控子集：`mcp.servers` 与绝对路径 `skill/command` 单项 enable 覆盖。项目不能覆盖监听地址、token、数据库、workspace root、密钥或安全 deny，也不能改变模型、权限、网络、features 或 skills roots。项目 MCP 须获得当前声明 bundle 的 Trust 后重启才连接；用户/服务的同名声明优先。每个 run 固定 RunSpec，不随运行中文件编辑改变。
 
 ## Workspace Trust
 
@@ -36,7 +36,7 @@ revoke → 删除当前 bundle 或全部授权
 - `Explore`：继承父会话当前 mode 的只读子 Agent；恢复时也会重算父会话最新 mode，shell 命令按只读规则判定，危险命令仍需审批或拒绝。
 - `run_in_background`：立即返回 run ID，之后查询状态。
 
-子 run 具有独立消息、预算、trace/root/parent/depth 和 checkpoint。默认禁止递归 spawn，depth 上限防止无限扩张；取消按 exact run 传播，不误杀兄弟任务。子代理不能扩大父级授权，交互审批不可用时副作用工具失败关闭。
+子 run 默认最多 4 个模型回合，具有独立消息、trace/root/parent/depth 和 checkpoint。默认禁止递归 spawn，depth 上限防止无限扩张；取消按 exact run 传播，不误杀兄弟任务。子代理不能扩大父级授权，交互审批不可用时副作用工具失败关闭。
 
 ```http
 GET /v1/agents?parent=<run-id>
@@ -61,9 +61,9 @@ nodes:
     depends_on: [review]
 ```
 
-每次运行先保存 definition digest。节点记录 inputHash、attempt、状态和结果；恢复时复用匹配哈希的完成节点，失败/丢失节点按策略重试。并发、节点数、Agent 调用数和总时长都有硬限制。
+每次运行先保存 definition digest。节点记录 inputHash、attempt、状态和结果；恢复时复用匹配哈希的完成节点，失败/丢失节点按策略重试。并发使用 toolConcurrency.maxConcurrency，节点总数保留内部安全上限；不再提供全局 Agent 调用次数或总时长硬停止配置。
 
-`max_nodes` 同时限制 fan-out 后的任务总数；Agent 调用预算在 resume 时累计。`retry` 表示首次尝试之后最多重试的次数。工具节点保留 `args`，其中的字符串也支持 `{{item}}` 和 `{{nodes.<id>.result}}`；fan-out 的聚合结果按 item 下标以换行连接，单项可用 `{{nodes.<id>[0].result}}` 引用。
+内部节点上限同时限制 fan-out 后的任务总数。`retry` 表示首次尝试之后最多重试的次数。工具节点保留 `args`，其中的字符串也支持 `{{item}}` 和 `{{nodes.<id>.result}}`；fan-out 的聚合结果按 item 下标以换行连接，单项可用 `{{nodes.<id>[0].result}}` 引用。
 
 ```bash
 ./agent-core workflows validate --file workflow.yaml

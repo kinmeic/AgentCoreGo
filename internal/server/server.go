@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"github.com/coder/websocket"
 	"log"
 	"net/http"
 	"strconv"
@@ -22,17 +23,23 @@ import (
 
 // Server is the HTTP server for Agent Core.
 type Server struct {
-	cfg          config.Config
-	orchestrator *agent.Orchestrator
-	toolRegistry *tool.Registry
-	mcpManager   *mcp.Manager
-	store        *store.SQLite
-	memService   *memory.Service
-	services     Services
-	mux          *http.ServeMux
-	metrics      serverMetrics
-	handlerOnce  sync.Once
-	handler      http.Handler
+	backgroundCtx    context.Context
+	backgroundCancel context.CancelFunc
+	backgroundMu     sync.Mutex
+	backgroundRuns   map[string]context.CancelFunc
+	backgroundWG     sync.WaitGroup
+	sockets          map[*websocket.Conn]bool
+	cfg              config.Config
+	orchestrator     *agent.Orchestrator
+	toolRegistry     *tool.Registry
+	mcpManager       *mcp.Manager
+	store            *store.SQLite
+	memService       *memory.Service
+	services         Services
+	mux              *http.ServeMux
+	metrics          serverMetrics
+	handlerOnce      sync.Once
+	handler          http.Handler
 }
 
 // NewServer creates a new HTTP server.
@@ -44,7 +51,9 @@ func NewServer(
 	store *store.SQLite,
 	memService *memory.Service,
 ) *Server {
+	backgroundCtx, backgroundCancel := context.WithCancel(context.Background())
 	s := &Server{
+		backgroundCtx: backgroundCtx, backgroundCancel: backgroundCancel, backgroundRuns: map[string]context.CancelFunc{}, sockets: map[*websocket.Conn]bool{},
 		cfg:          cfg,
 		orchestrator: orchestrator,
 		toolRegistry: registry,
@@ -60,6 +69,8 @@ func NewServer(
 
 // registerRoutes sets up all API routes.
 func (s *Server) registerRoutes() {
+	s.mux.HandleFunc("GET /ws", s.handleWebSocket)
+	s.mux.HandleFunc("GET /api/server-info", s.handleServerInfo)
 	// Chat endpoints
 	s.mux.HandleFunc("POST /v1/chat", s.handleChatSync)
 	s.mux.HandleFunc("POST /v1/chat/stream", s.handleChatStream)
@@ -86,7 +97,6 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/memories", s.handleListMemories)
 	s.mux.HandleFunc("POST /v1/memories", s.handleCreateMemory)
 	s.mux.HandleFunc("POST /v1/memories/consolidate", s.handleConsolidateMemories)
-	s.mux.HandleFunc("POST /v1/memories/rebuild", s.handleRebuildMemories)
 	s.mux.HandleFunc("PUT /v1/memories/{id}", s.handleUpdateMemory)
 	s.mux.HandleFunc("DELETE /v1/memories/{id}", s.handleDeleteMemory)
 
@@ -112,7 +122,7 @@ func (s *Server) registerRoutes() {
 // Handler returns the HTTP handler with optional auth middleware.
 func (s *Server) Handler() http.Handler {
 	s.handlerOnce.Do(func() {
-		var handler http.Handler = s.mux
+		var handler http.Handler = s.featureMiddleware(s.mux)
 		handler = s.bodyLimitMiddleware(handler)
 		if s.cfg.Server.AuthToken != "" {
 			handler = s.authMiddleware(handler)
@@ -136,6 +146,10 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		auth := r.Header.Get("Authorization")
+		if r.URL.Path == "/ws" && auth == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if auth == "" {
 			respondError(w, http.StatusUnauthorized, "missing authorization header")
 			return
@@ -213,10 +227,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		s.serveEventStream(w, r, events)
 		return
 	}
-	runCtx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	events := make(chan model.StreamEvent, 64)
-	go s.orchestrator.ChatStream(runCtx, resolved, events)
+	accepted, err := s.acceptRun(resolved, r.Header.Get("X-Command-ID"))
+	if err != nil {
+		respondRunError(w, err)
+		return
+	}
+	w.Header().Set("X-Run-ID", accepted.RunID)
+	events := make(chan model.StreamEvent, 128)
+	go s.streamRunEvents(r, accepted.RunID, 0, events)
 	s.serveEventStream(w, r, events)
 }
 

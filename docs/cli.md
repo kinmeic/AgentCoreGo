@@ -1,6 +1,6 @@
 # CLI
 
-CLI 是 HTTP API 的薄客户端；服务必须已启动。默认连接 `http://127.0.0.1:8900`，可用 `AGENT_CORE_URL` 或 `--url` 修改，token 来自 `AUTH_TOKEN` 或 `--token`。
+CLI 是 HTTP API 的薄客户端；服务必须已启动。默认连接 `http://127.0.0.1:3030`，可用 `AGENT_CORE_URL` 或 `--url` 修改，token 来自 `AUTH_TOKEN` 或 `--token`。
 
 ## 对话
 

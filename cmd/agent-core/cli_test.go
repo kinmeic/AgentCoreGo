@@ -78,7 +78,7 @@ func TestCLIChatApprovalEndToEnd(t *testing.T) {
 		registered, _ := registry.Get(name)
 		return permissions.Authorize(ctx, registered, nil)
 	})
-	memories := memory.NewService(db, nil, nil, cfg.Memory)
+	memories := memory.NewService(db, cfg.Memory)
 	orchestrator := agent.NewOrchestrator(provider, registry, tool.NewProcessRegistry(), db, memories,
 		compressor.NewCompressor(cfg.Compression, nil), prompt.NewBuilder(), cfg)
 	orchestrator.SetCheckpointStore(agent.NewSQLiteCheckpointStore(db))

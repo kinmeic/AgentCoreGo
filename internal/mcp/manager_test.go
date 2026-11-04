@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"agent-core/internal/config"
 	"agent-core/internal/tool"
 	"context"
 	"encoding/json"
@@ -50,7 +51,7 @@ func TestManagerStdioConnectCallDisconnect(t *testing.T) {
 func TestManagerStreamableHTTP(t *testing.T) {
 	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return newTestServer() }, nil)
 	server := httptest.NewServer(handler)
-	defer server.Close()
+	t.Cleanup(server.Close)
 	registry := tool.NewRegistry()
 	manager := NewManager(registry)
 	config, _ := json.Marshal(HTTPConfig{URL: server.URL, AllowPrivate: true})
@@ -60,7 +61,7 @@ func TestManagerStreamableHTTP(t *testing.T) {
 func TestManagerSSE(t *testing.T) {
 	handler := sdk.NewSSEHandler(func(*http.Request) *sdk.Server { return newTestServer() }, nil)
 	server := httptest.NewServer(handler)
-	defer server.Close()
+	t.Cleanup(server.Close)
 	registry := tool.NewRegistry()
 	manager := NewManager(registry)
 	config, _ := json.Marshal(SSEConfig{URL: server.URL, AllowPrivate: true})
@@ -97,7 +98,7 @@ func exerciseConnection(t *testing.T, manager *Manager, registry *tool.Registry,
 
 func TestPrivateMCPRequiresExplicitOptIn(t *testing.T) {
 	server := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return newTestServer() }, nil))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	manager := NewManager(tool.NewRegistry())
 	config, _ := json.Marshal(HTTPConfig{URL: server.URL})
 	err := manager.Connect(context.Background(), ServerConfig{Name: "private", Transport: "streamable_http", Config: config})
@@ -115,7 +116,7 @@ func TestMCPHeadersAreForwarded(t *testing.T) {
 		}
 		base.ServeHTTP(w, r)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	manager := NewManager(tool.NewRegistry())
 	config, _ := json.Marshal(HTTPConfig{URL: server.URL, AllowPrivate: true, Headers: map[string]string{"Authorization": "Bearer test"}})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -125,5 +126,48 @@ func TestMCPHeadersAreForwarded(t *testing.T) {
 	}
 	if err := manager.Disconnect("auth"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestZCodeConfiguredTransportsAndAlwaysLoad(t *testing.T) {
+	for _, transport := range []string{"stdio", "http", "sse"} {
+		t.Run(transport, func(t *testing.T) {
+			registry := tool.NewRegistry()
+			manager := NewManager(registry)
+			defer manager.DisconnectAll()
+			entry := config.MCPServerConfig{Type: transport, AlwaysLoad: true, TimeoutMs: 1500}
+			if transport == "stdio" {
+				entry.Command = os.Args[0]
+				entry.Args = []string{"-test.run=TestMCPStdioHelper"}
+				entry.Env = map[string]string{"AGENTCORE_MCP_HELPER": "1"}
+			} else {
+				var handler http.Handler
+				if transport == "http" {
+					handler = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return newTestServer() }, nil)
+				} else {
+					handler = sdk.NewSSEHandler(func(*http.Request) *sdk.Server { return newTestServer() }, nil)
+				}
+				server := httptest.NewServer(handler)
+				t.Cleanup(server.Close)
+				entry.URL = server.URL
+			}
+			manager.ConnectConfigured(context.Background(), config.MCPConfig{Servers: map[string]config.MCPServerConfig{"configured": entry}}, true)
+			registered, ok := registry.Get("configured__echo")
+			if !ok {
+				t.Fatal("configured server not connected")
+			}
+			if registered.Capabilities.Timeout != 1500*time.Millisecond || !registered.AlwaysLoaded {
+				t.Fatalf("declaration settings not applied: %+v", registered)
+			}
+			state := tool.NewDiscoveryState(nil, true, 1)
+			definitions := registry.ToolDefinitionsForRun(state)
+			if len(definitions) != 1 {
+				t.Fatal("alwaysLoad tool hidden")
+			}
+			result, err := registry.Dispatch(context.Background(), "configured__echo", map[string]any{"value": "configured"})
+			if err != nil || result != "echo:configured" {
+				t.Fatalf("call: %s %v", result, err)
+			}
+		})
 	}
 }

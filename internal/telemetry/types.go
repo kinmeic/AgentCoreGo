@@ -42,18 +42,17 @@ const (
 type Purpose string
 
 const (
-	PurposeMain      Purpose = "main"
-	PurposeCompact   Purpose = "compact"
-	PurposeTitle     Purpose = "title"
-	PurposeSubagent  Purpose = "subagent"
-	PurposeWorkflow  Purpose = "workflow"
-	PurposeEmbedding Purpose = "embedding"
+	PurposeMain     Purpose = "main"
+	PurposeCompact  Purpose = "compact"
+	PurposeTitle    Purpose = "title"
+	PurposeSubagent Purpose = "subagent"
+	PurposeWorkflow Purpose = "workflow"
 )
 
 // Valid reports whether p is a supported model-call purpose.
 func (p Purpose) Valid() bool {
 	switch p {
-	case PurposeMain, PurposeCompact, PurposeTitle, PurposeSubagent, PurposeWorkflow, PurposeEmbedding:
+	case PurposeMain, PurposeCompact, PurposeTitle, PurposeSubagent, PurposeWorkflow:
 		return true
 	default:
 		return false

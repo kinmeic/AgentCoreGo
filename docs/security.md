@@ -11,7 +11,7 @@ AgentCore 当前是**单租户、单进程、单 workspace** 服务。静态 Bea
 非 loopback 监听启动校验要求：
 
 1. 配置 `AUTH_TOKEN`。
-2. `tools.terminal_enabled: false`。
+2. `server.terminalEnabled: false`。
 3. 生产环境在反向代理启用 TLS、外层限流和日志脱敏。
 
 Bearer 比较使用常量时间。`/health` 是公开 liveness；`/ready`、指标和管理 API 需要鉴权。CORS 使用精确 origin，不支持 `*`。

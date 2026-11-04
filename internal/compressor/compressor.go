@@ -88,7 +88,12 @@ func (c *Compressor) Compress(ctx context.Context, messages []model.Message, con
 	for _, definitions := range tools {
 		availableWindow -= EstimateToolDefinitionsTokens(definitions)
 	}
-	availableWindow -= 1024 // Reserve protocol and output headroom.
+	// ZCode compact/policy.ts: reserve at most 21K output plus a 13K buffer.
+	outputReserve := c.cfg.MaxOutputTokens
+	if outputReserve <= 0 {
+		outputReserve = config.DefaultOutputTokens
+	}
+	availableWindow -= min(outputReserve, 21_000) + 13_000
 	if availableWindow < 1024 {
 		availableWindow = contextWindow
 	}

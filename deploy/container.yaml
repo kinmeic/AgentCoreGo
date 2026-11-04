@@ -1,90 +1,71 @@
+# Runtime semantics pinned to ZCode v3.17.2 / a9fe401e.
+# server/llm/workspace are independent Go service deployment/provider settings.
 server:
   host: "0.0.0.0"
-  port: 8900
+  port: 3030
   auth_token: "${AUTH_TOKEN}"
+  terminalEnabled: false # An OS shell, not a sandbox; false for non-loopback binding.
   max_request_bytes: 1048576
   cors_origins: []
   rate_limit_per_minute: 300
   max_concurrent_runs: 10
-  log_format: "json"
 
 llm:
-  api_format: "openai" # openai (Chat Completions) or anthropic (Messages)
-  base_url: "https://api.openai.com/v1"
+  api_format: openai # openai Chat Completions or anthropic Messages
+  base_url: https://api.openai.com/v1
   api_key: "${LLM_API_KEY}"
-  model: "gpt-4o"
-  context_window: 128000
-  max_tool_iterations: 15
-  max_retries: 3
-  temperature: 0.7
-  max_output_tokens: 4096
-  max_run_tokens: 100000
-  run_timeout_seconds: 1800
+  model: "" # Required for chat: set LLM_MODEL or select an actual provider model ID.
+  context_window: 200000 # Set actual model capability; fallback follows ZCode.
+  max_output_tokens: 32000 # Set actual model capability.
+  reasoning_effort: ""
   fallbacks: []
 
-embedding:
-  base_url: "https://api.openai.com/v1"
-  api_key: "${EMBEDDING_API_KEY}"
-  model: "text-embedding-3-small"
-  dimensions: 1536
-
-store:
-  db_path: "/data/agent/agent.db"
-  vector_backend: "sqlite"
-
 workspace:
-  path: "/workspace"
-  soul_file: "SOUL.md"
+  path: /workspace # AGENTS.md and file tools share this root.
+storage:
+  dir: /data # Isolated Go service data; never opens ZCode Desktop's DB by default.
+  sessionDbPath: /data/agent/agent.db
 
-compression:
-  threshold_percent: 0.50
-  protect_first_n: 3
-  protect_last_n: 20
-  target_ratio: 0.20
-
-tools:
-  approval_mode: "build"
-  terminal_enabled: false
-  progressive_tools: true
-  tool_search_threshold: 10
-  enabled_toolsets: []
-
-memory:
-  capacity_limit: 200
-  consolidation_threshold: 160
-  auto_nudge: true
-  auto_consolidate: false
-
-security:
-  policies: []
-
+modelStream:
+  idleTimeoutMs: 600000
+network:
+  timeout: 180000 # milliseconds
+  # httpProxy: http://127.0.0.1:7890
+  # noProxy: localhost,127.0.0.1,.example.com
+  # caCertFile: /absolute/path/to/ca.pem
+permission:
+  mode: build # build, edit, guarded, yolo, plan; auto is reserved and denies tools.
+  allowedTools: []
+  disallowedTools: []
+  autoApproveHighRisk: false
+  allowMediumRiskInAuto: false
+logging:
+  level: info
+  format: json
+toolConcurrency:
+  maxConcurrency: 10
+modelAnomalyGuard:
+  repeatedToolCallWarningThreshold: 3
+  maxBudgetWarningsPerTurn: 3
+  # toolCallWarningThreshold: 100 # Advisory only; unset by default.
 features:
-  skills: true
-  commands: true
-  subagents: true
-  workflow: true
-  model_io: true
-
-ui:
-  locale: "zh-CN"
-
+  compact: true
+  rewind: true
+  subagent: true
+  memory: true
+  skill: true
+  mcp: true
+memory:
+  use: true
 skills:
-  roots: []
-  metadata_budget: 8192
-commands:
-  roots: []
-  metadata_budget: 8192
-  max_command_bytes: 100000
-workflow:
   enabled: true
+  includeInstructions: true
+  metadataBudget: 20000
   roots: []
-  max_nodes: 100
-  max_concurrency: 4
-  max_agent_calls: 50
-  timeout_seconds: 1800
-telemetry:
-  mode: "redacted"
-  directory: "/data/model-io"
-  queue_size: 256
-  max_artifact_bytes: 4194304
-  retention_files: 100
+skill: {} # /absolute/path/to/SKILL.md: {enable: false}
+command: {} # /absolute/path/to/command.md: {enable: false}
+mcp:
+  servers: {} # See README for stdio/http/sse declarations.
+ui:
+  locale: en-US
+  theme: auto

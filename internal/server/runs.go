@@ -29,7 +29,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStopRun(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	stopped := s.orchestrator.StopRun(id)
+	stopped := s.stopAcceptedRun(id)
 	if !stopped {
 		run, err := s.store.GetRun(id)
 		if err != nil {

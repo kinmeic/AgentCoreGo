@@ -45,9 +45,10 @@ func (serverTestLLM) Name() string          { return "test" }
 func (serverTestLLM) ModelName() string     { return "test" }
 func (serverTestLLM) MaxContextWindow() int { return 100000 }
 
-func newServerHarness(t *testing.T) (*Server, *agent.Orchestrator) {
+func newServerHarness(t *testing.T, providers ...llm.Provider) (*Server, *agent.Orchestrator) {
 	t.Helper()
 	cfg := config.DefaultConfig()
+	cfg.LLM.Model = "test"
 	cfg.Workspace.Path = t.TempDir()
 	cfg.Tools.WorkDir = cfg.Workspace.Path
 	cfg.Server.AuthToken = "secret"
@@ -57,10 +58,13 @@ func newServerHarness(t *testing.T) (*Server, *agent.Orchestrator) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := serverTestLLM{}
+	var provider llm.Provider = serverTestLLM{}
+	if len(providers) > 0 {
+		provider = providers[0]
+	}
 	registry := tool.NewRegistry()
 	manager := mcp.NewManager(registry)
-	memories := memory.NewService(db, nil, nil, cfg.Memory)
+	memories := memory.NewService(db, cfg.Memory)
 	orchestrator := agent.NewOrchestrator(provider, registry, tool.NewProcessRegistry(), db, memories,
 		compressor.NewCompressor(cfg.Compression, nil), prompt.NewBuilder(), cfg)
 	orchestrator.SetCheckpointStore(agent.NewSQLiteCheckpointStore(db))
@@ -84,7 +88,13 @@ func newServerHarness(t *testing.T) (*Server, *agent.Orchestrator) {
 		Commands:  commands.NewLoader(commands.Options{ProjectDir: cfg.Workspace.Path}),
 		Subagents: subagents.NewManager(db, orchestrator), Workflow: workflow.NewEngine(db, orchestrator, registry, cfg),
 		Recorder: recorder, Benchmark: benchmarkRunner, Project: project.Report{Workspace: cfg.Workspace.Path}})
-	t.Cleanup(func() { orchestrator.StopAll(); manager.DisconnectAll(); _ = recorder.Close(); _ = db.Close() })
+	t.Cleanup(func() {
+		orchestrator.StopAll()
+		service.CloseConnections()
+		manager.DisconnectAll()
+		_ = recorder.Close()
+		_ = db.Close()
+	})
 	return service, orchestrator
 }
 

@@ -86,7 +86,55 @@ func TestLegacyMigrationCreatesBackup(t *testing.T) {
 		t.Fatalf("backup is unavailable: %v", err)
 	}
 	var version int
-	if err := s.DB().QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != 6 {
+	if err := s.DB().QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != 7 {
 		t.Fatalf("unexpected schema version %d: %v", version, err)
+	}
+}
+
+func TestVectorRemovalPreservesBusinessMemories(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	legacy, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Apply the immutable old migration history to simulate an existing v6 database.
+	for _, migration := range schemaMigrations {
+		if migration.version >= 7 {
+			break
+		}
+		for _, statement := range migration.sql {
+			if _, err := legacy.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := legacy.Exec(`INSERT INTO agent_memories(content,category,source,importance,enabled) VALUES('keep this memory','fact','user',0.5,1)`); err != nil {
+		t.Fatal(err)
+	}
+	legacy.Close()
+	db, err := NewSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var vectors int
+	if err := db.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name='vector_store'`).Scan(&vectors); err != nil || vectors != 0 {
+		t.Fatalf("vector table retained: %v", err)
+	}
+	count, err := db.CountMemories()
+	if err != nil || count != 1 || db.LastMigrationBackup() == "" {
+		t.Fatalf("business data or backup lost: %d %v", count, err)
+	}
+}
+
+func TestAcceptedRunIsReadableBeforeWorkerStarts(t *testing.T) {
+	db := newTestStore(t)
+	createTestConversation(t, db, "conversation")
+	if err := db.SaveAcceptedCommand("command", "fingerprint", "run", "conversation", "input", ""); err != nil {
+		t.Fatal(err)
+	}
+	run, err := db.GetRun("run")
+	if err != nil || run == nil || run.Status != model.RunStatusPending {
+		t.Fatalf("accepted run must be readable immediately: %+v, %v", run, err)
 	}
 }

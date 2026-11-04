@@ -35,6 +35,7 @@ const (
 // searched nearest-first, followed by user directories. Within a directory,
 // .zcode, .agents, and .claude are searched in that order.
 type Options struct {
+	Overrides  map[string]bool
 	Roots      []string
 	ProjectDir string
 	UserDir    string

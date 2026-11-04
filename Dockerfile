@@ -17,9 +17,9 @@ COPY --from=build /out/agent-core /usr/local/bin/agent-core
 COPY deploy/container.yaml /etc/agent-core/agent-core.yaml
 USER 10001:10001
 WORKDIR /home/agentcore
-EXPOSE 8900
+EXPOSE 3030
 VOLUME ["/data", "/workspace"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8900/health || exit 1
+  CMD curl -fsS http://127.0.0.1:3030/health || exit 1
 ENTRYPOINT ["/usr/local/bin/agent-core"]
 CMD ["-config", "/etc/agent-core/agent-core.yaml"]

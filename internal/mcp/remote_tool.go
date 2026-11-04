@@ -13,6 +13,7 @@ import (
 )
 
 type remoteTool struct {
+	timeout     time.Duration
 	name        string
 	description string
 	remoteName  string
@@ -26,7 +27,7 @@ func newRemoteTool(serverName string, remote *sdk.Tool, session *sdk.ClientSessi
 		_ = json.Unmarshal(encoded, &schema)
 	}
 	return &remoteTool{name: namespaceToolName(serverName, remote.Name), description: remote.Description,
-		remoteName: remote.Name, schema: schema, session: session}
+		remoteName: remote.Name, schema: schema, session: session, timeout: 30 * time.Second}
 }
 
 func namespaceToolName(server, name string) string {
@@ -69,7 +70,7 @@ func (t *remoteTool) Schema() tool.ToolSchema {
 }
 func (t *remoteTool) Capabilities() tool.Capabilities {
 	// Server annotations are hints, not an authorization boundary.
-	return tool.Capabilities{NeedsApproval: true, SideEffectScope: "external", RiskLevel: "high", Timeout: 2 * time.Minute, MaxOutputBytes: 100_000}
+	return tool.Capabilities{NeedsApproval: true, SideEffectScope: "external", RiskLevel: "high", Timeout: t.timeout, MaxOutputBytes: 100_000}
 }
 func (t *remoteTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	result, err := t.session.CallTool(ctx, &sdk.CallToolParams{Name: t.remoteName, Arguments: args})
