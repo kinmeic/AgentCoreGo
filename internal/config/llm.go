@@ -5,6 +5,10 @@ import "fmt"
 const (
 	APIFormatOpenAI    = "openai"
 	APIFormatAnthropic = "anthropic"
+
+	ThinkingTypeDisabled = "disabled"
+	ThinkingTypeEnabled  = "enabled"
+	ThinkingTypeAdaptive = "adaptive"
 )
 
 // An omitted format preserves compatibility with existing OpenAI configurations.
@@ -14,6 +18,27 @@ func ValidateAPIFormat(format string) error {
 		return nil
 	default:
 		return fmt.Errorf("must be openai or anthropic, got %q", format)
+	}
+}
+
+func ValidateThinking(c LLMConfig) error {
+	typeName := c.ThinkingType
+	if typeName == "" {
+		typeName = ThinkingTypeDisabled
+	}
+	switch typeName {
+	case ThinkingTypeDisabled, ThinkingTypeAdaptive:
+		return nil
+	case ThinkingTypeEnabled:
+		if c.ThinkingBudgetTokens < 1024 {
+			return fmt.Errorf("manual thinking budget must be at least 1024 tokens")
+		}
+		if c.ThinkingBudgetTokens >= c.MaxOutputTokens {
+			return fmt.Errorf("manual thinking budget must be less than max_output_tokens")
+		}
+		return nil
+	default:
+		return fmt.Errorf("thinking type must be disabled, enabled, or adaptive, got %q", typeName)
 	}
 }
 

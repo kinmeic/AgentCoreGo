@@ -14,6 +14,12 @@ type StreamChunk struct {
 	// Content delta
 	Content string
 
+	// Provider-neutral reasoning delta, kept separate from the visible answer.
+	Reasoning string
+
+	// Provider-specific response state used only for protocol continuity.
+	ProviderState json.RawMessage
+
 	// Tool call deltas (may be partial)
 	ToolCalls []ToolCallDelta
 
@@ -55,9 +61,10 @@ type streamResponse struct {
 }
 
 type delta struct {
-	Role      string          `json:"role,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	ToolCalls []toolCallDelta `json:"tool_calls,omitempty"`
+	Role              string          `json:"role,omitempty"`
+	Content           string          `json:"content,omitempty"`
+	ReasoningContent  string          `json:"reasoning_content,omitempty"`
+	ToolCalls         []toolCallDelta `json:"tool_calls,omitempty"`
 }
 
 type toolCallDelta struct {
@@ -134,6 +141,9 @@ func parseSSEStream(ctx context.Context, reader io.Reader, ch chan<- StreamChunk
 			// Content delta
 			if choice.Delta.Content != "" {
 				chunk.Content = choice.Delta.Content
+			}
+			if choice.Delta.ReasoningContent != "" {
+				chunk.Reasoning = choice.Delta.ReasoningContent
 			}
 
 			// Tool call deltas

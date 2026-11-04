@@ -181,11 +181,11 @@ func addLogTx(tx *sql.Tx, log *model.ConversationLog) error {
 	result, err := tx.Exec(
 		`INSERT INTO conversation_logs (
 			conversation_id, run_id, role, content, tool_calls, tool_call_id, status,
-			intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at, provider_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.ConversationID, log.RunID, log.Role, log.Content, string(toolCalls), log.ToolCallID,
 		log.Status, log.Intent, string(actions), log.PromptTokens, log.CompletionTokens,
-		log.ContextTokens, log.CreatedAt,
+		log.ContextTokens, log.CreatedAt, string(log.ProviderState),
 	)
 	if err != nil {
 		return err
@@ -226,10 +226,10 @@ func (s *SQLite) CommitToolResult(log *model.ConversationLog, checkpoint []byte)
 func (s *SQLite) GetLogs(conversationID string, limit int) ([]*model.ConversationLog, error) {
 	rows, err := s.db.Query(
 		`SELECT id, conversation_id, run_id, role, content, tool_calls, tool_call_id, status,
-			intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at
+			intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at, provider_state
 		FROM (
 			SELECT id, conversation_id, run_id, role, content, tool_calls, tool_call_id, status,
-				intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at
+				intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at, provider_state
 			FROM conversation_logs WHERE conversation_id = ? ORDER BY id DESC LIMIT ?
 		) ORDER BY id ASC`,
 		conversationID, limit,
@@ -242,16 +242,19 @@ func (s *SQLite) GetLogs(conversationID string, limit int) ([]*model.Conversatio
 	var logs []*model.ConversationLog
 	for rows.Next() {
 		var cl model.ConversationLog
-		var runID, toolCalls, toolCallID, status, actions sql.NullString
+		var runID, toolCalls, toolCallID, status, actions, providerState sql.NullString
 
 		if err := rows.Scan(&cl.ID, &cl.ConversationID, &runID, &cl.Role, &cl.Content,
 			&toolCalls, &toolCallID, &status, &cl.Intent, &actions, &cl.PromptTokens,
-			&cl.CompletionTokens, &cl.ContextTokens, &cl.CreatedAt); err != nil {
+			&cl.CompletionTokens, &cl.ContextTokens, &cl.CreatedAt, &providerState); err != nil {
 			return nil, err
 		}
 		cl.RunID = runID.String
 		cl.ToolCallID = toolCallID.String
 		cl.Status = status.String
+		if providerState.Valid && providerState.String != "" {
+			cl.ProviderState = json.RawMessage(providerState.String)
+		}
 		if toolCalls.Valid && toolCalls.String != "" {
 			if err := json.Unmarshal([]byte(toolCalls.String), &cl.ToolCalls); err != nil {
 				return nil, fmt.Errorf("decode tool calls for log %d: %w", cl.ID, err)

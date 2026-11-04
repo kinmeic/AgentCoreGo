@@ -191,6 +191,9 @@ func cliStreamChat(client *apiClient, path string, body any) error {
 		case "file.changed":
 			fmt.Fprintf(os.Stderr, "[file] %s\n", event.Content)
 		case "approval.required":
+			if event.Preview != "" {
+				fmt.Fprintf(os.Stderr, "\n[approval] %s\n", event.Preview)
+			}
 			answer := promptLine(input, fmt.Sprintf("Allow %s? [y]es/[a]ll conversation/[n]o: ", event.ToolName))
 			decision, scope := "deny", "once"
 			switch strings.ToLower(answer) {

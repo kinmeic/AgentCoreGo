@@ -110,6 +110,7 @@ func main() {
 	permissions := tool.NewPermissionManager(cfg.Permission.Mode)
 	permissions.ConfigureRules(cfg.Permission.AllowedTools, cfg.Permission.DisallowedTools)
 	permissions.SetAutoApproveHighRisk(cfg.Permission.AutoApproveHighRisk)
+	permissions.SetAlwaysAskTerminal(cfg.Permission.AlwaysAskTerminal)
 	toolRegistry.SetPolicyCheck(func(ctx context.Context, toolName string, args map[string]any) error {
 		action := security.Action{Resource: resourceForTool(toolName), Operation: operationForTool(toolName), Target: extractTarget(toolName, args)}
 		if info, ok := tool.ExecutionInfoFromContext(ctx); ok {
@@ -471,6 +472,7 @@ func runMCPServer() {
 	permissions := tool.NewPermissionManager(cfg.Permission.Mode)
 	permissions.ConfigureRules(cfg.Permission.AllowedTools, cfg.Permission.DisallowedTools)
 	permissions.SetAutoApproveHighRisk(cfg.Permission.AutoApproveHighRisk)
+	permissions.SetAlwaysAskTerminal(cfg.Permission.AlwaysAskTerminal)
 	toolRegistry.SetPolicyCheck(func(ctx context.Context, toolName string, args map[string]any) error {
 		action := security.Action{Resource: resourceForTool(toolName), Operation: operationForTool(toolName), Target: extractTarget(toolName, args)}
 		if info, ok := tool.ExecutionInfoFromContext(ctx); ok {

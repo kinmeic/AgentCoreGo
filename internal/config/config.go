@@ -78,6 +78,9 @@ type LLMConfig struct {
 	MaxRunTokens        int                `yaml:"-" json:"-"`
 	RunTimeoutSeconds   int                `yaml:"-" json:"-"`
 	ReasoningEffort     string             `yaml:"reasoning_effort" json:"reasoning_effort"`
+	ExposeReasoning     bool               `yaml:"expose_reasoning" json:"expose_reasoning"`
+	ThinkingType        string             `yaml:"thinking_type" json:"thinking_type"`
+	ThinkingBudgetTokens int               `yaml:"thinking_budget_tokens" json:"thinking_budget_tokens"`
 	Fallbacks           []FallbackProvider `yaml:"fallbacks" json:"fallbacks"`
 }
 type FallbackProvider struct {
@@ -176,7 +179,8 @@ func DefaultConfig() Config {
 		Server: ServerConfig{Host: "127.0.0.1", Port: 3030, MaxRequestBytes: 1024 * 1024,
 			RateLimitPerMinute: 300, MaxConcurrentRuns: 10, LogFormat: "text", TerminalEnabled: true},
 		LLM: LLMConfig{APIFormat: "openai", BaseURL: "https://api.openai.com/v1", Model: "", ContextWindow: DefaultContextWindow,
-			MaxRetries: DefaultModelRetries, MaxOutputTokens: DefaultOutputTokens,
+			MaxRetries: DefaultModelRetries, MaxOutputTokens: DefaultOutputTokens, ExposeReasoning: true,
+			ThinkingType: ThinkingTypeDisabled, ThinkingBudgetTokens: 16000,
 			RequestTimeoutMs: DefaultNetworkTimeoutMs, StreamIdleTimeoutMs: DefaultModelStreamIdleTimeoutMs,
 			RetryBaseDelayMs: 2000, RetryBackoffFactor: 2, RetryMaxDelayMs: 60000, RetryJitter: true},
 		Store:       StoreConfig{DBPath: "./data/agent.db"},
@@ -390,6 +394,9 @@ func (c *Config) Validate(mode ValidateMode) error {
 	}
 	if c.LLM.MaxOutputTokens <= 0 || c.LLM.MaxRunTokens < 0 || c.LLM.RunTimeoutSeconds < 0 {
 		return fmt.Errorf("LLM output/run budgets must be positive")
+	}
+	if err := ValidateThinking(c.LLM); err != nil {
+		return fmt.Errorf("llm.thinking: %w", err)
 	}
 	if c.LLM.Temperature < 0 || c.LLM.Temperature > 2 {
 		return fmt.Errorf("llm.temperature must be between 0 and 2")

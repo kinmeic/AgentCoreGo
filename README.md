@@ -76,7 +76,7 @@ llm:
   max_output_tokens: 4096
 ```
 
-使用 `LLM_API_KEY` 注入 Anthropic key。也可用 `LLM_API_FORMAT`、`LLM_BASE_URL`、`LLM_MODEL` 覆盖对应配置；已有配置未指定协议时继续使用 OpenAI 格式。当前 Anthropic 适配支持文本和客户端工具调用，显式禁用 extended thinking；完整参数说明与混合协议 fallback 示例见 [配置文档](docs/configuration.md#anthropic-messages)。
+使用 `LLM_API_KEY` 注入 Anthropic key。也可用 `LLM_API_FORMAT`、`LLM_BASE_URL`、`LLM_MODEL` 覆盖对应配置；已有配置未指定协议时继续使用 OpenAI 格式。Anthropic 适配支持文本、客户端工具调用及可配置的 manual/adaptive thinking；思考正文通过独立 `reasoning` 流事件公开，签名与 redacted 数据仅供协议连续性使用。完整参数说明与混合协议 fallback 示例见 [配置文档](docs/configuration.md#anthropic-messages)。
 
 ### 启动
 

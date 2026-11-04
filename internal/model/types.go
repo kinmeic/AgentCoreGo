@@ -26,8 +26,9 @@ type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	IsError    bool       `json:"is_error,omitempty"`
+	ToolCallID    string          `json:"tool_call_id,omitempty"`
+	IsError       bool            `json:"is_error,omitempty"`
+	ProviderState json.RawMessage `json:"provider_state,omitempty"`
 }
 
 // ToolCall represents an LLM-generated tool call.
@@ -197,6 +198,7 @@ type Run struct {
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`
 	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
+	ProviderState  json.RawMessage   `json:"-"`
 }
 
 // RunEvent is the durable form of a stream event.
@@ -235,7 +237,8 @@ type ConversationLog struct {
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 	Status           string     `json:"status,omitempty"`
 	Intent           string     `json:"intent,omitempty"`
-	Actions          []Action   `json:"actions,omitempty"`
+	Actions         []Action        `json:"actions,omitempty"`
+	ProviderState   json.RawMessage `json:"-"`
 	PromptTokens     int        `json:"prompt_tokens,omitempty"`
 	CompletionTokens int        `json:"completion_tokens,omitempty"`
 	ContextTokens    int        `json:"context_tokens,omitempty"`

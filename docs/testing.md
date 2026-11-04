@@ -79,7 +79,7 @@ go build -trimpath ./cmd/agent-core
 
 Agent 集成测试覆盖同步/流式模式的完整两工具循环、`tool_result.is_error` 和历史恢复；另验证 OpenAI → Anthropic 混合 fallback、模型覆盖、benchmark、配置/env 校验及原始 wire 采集脱敏。现有 OpenAI 测试继续覆盖默认配置兼容性。
 
-全量标准/race 测试、vet、构建、配置校验与 Linux/Windows amd64 交叉编译通过，govulncheck 未发现已知漏洞。另使用编译后的服务二进制和本地 Messages mock，验证配置启动、HTTP JSON/SSE 对话、token 统计与关闭流程；未使用真实 Anthropic key 联调。当前适配范围为文本和客户端工具，extended thinking 被显式禁用，详见 [协议配置](configuration.md#anthropic-messages)。
+全量标准/race 测试、vet、构建、配置校验与 Linux/Windows amd64 交叉编译通过，govulncheck 未发现已知漏洞。另使用编译后的服务二进制和本地 Messages mock，验证配置启动、HTTP JSON/SSE 对话、token 统计与关闭流程；未使用真实 Anthropic key 联调。当前适配范围为文本、客户端工具及 manual/adaptive thinking，签名与 redacted blocks 的连续性使用内部 provider state；详见 [协议配置](configuration.md#anthropic-messages)。
 
 ## 未在本次环境验收
 

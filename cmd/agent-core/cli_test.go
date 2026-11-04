@@ -112,4 +112,7 @@ func TestCLIChatApprovalEndToEnd(t *testing.T) {
 	if !strings.Contains(string(stdout), "approved done") || !strings.Contains(string(stderr), "status=completed") {
 		t.Fatalf("unexpected output stdout=%q stderr=%q", stdout, stderr)
 	}
+	if !strings.Contains(string(stderr), "[approval] {}") || !strings.Contains(string(stderr), "Allow risky?") {
+		t.Fatalf("approval prompt did not include preview: %q", stderr)
+	}
 }

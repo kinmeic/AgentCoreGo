@@ -303,6 +303,12 @@ func (c *Client) doJSONRequest(ctx context.Context, endpoint string, reqBody any
 			return nil, fmt.Errorf("create request: %w", err)
 		}
 		req.Header = c.requestHeaders()
+		if c.cfg.APIFormat == config.APIFormatAnthropic {
+			if body, ok := reqBody.(anthropicRequest); ok && body.Thinking != nil &&
+				body.Thinking.Type == config.ThinkingTypeEnabled && len(body.Tools) > 0 {
+				req.Header.Set("anthropic-beta", anthropicInterleavedThinkingBeta)
+			}
+		}
 		startedAt := time.Now()
 		resp, err := c.httpClient.Do(req)
 		if err != nil {

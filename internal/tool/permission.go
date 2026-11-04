@@ -44,6 +44,7 @@ type pendingApproval struct {
 
 // PermissionManager applies run modes and coordinates asynchronous approvals.
 type PermissionManager struct {
+	alwaysAskTerminal   bool
 	autoApproveHighRisk bool
 	allowed             map[string]bool
 	denied              map[string]bool
@@ -81,12 +82,19 @@ func (m *PermissionManager) Authorize(ctx context.Context, registered *Registere
 	name := registered.Provider.Name()
 	m.mu.RLock()
 	denied, allowed := m.denied[name], m.allowed[name]
+	alwaysAskTerminal := m.alwaysAskTerminal
 	m.mu.RUnlock()
 	if denied {
 		return fmt.Errorf("permission.disallowedTools denies %s", name)
 	}
 	if mode == "guarded" && registered.Source == SourceBuiltin && name == "run_terminal" && !caps.ReadOnly {
 		caps.AlwaysAsk = true
+	}
+	if alwaysAskTerminal && name == "run_terminal" && !caps.ReadOnly {
+		switch mode {
+		case "build", "edit", "guarded", "yolo":
+			caps.AlwaysAsk = true
+		}
 	}
 	decision := m.decisionForMode(mode, caps)
 	if mode == "edit" && registered.Source == SourceBuiltin && caps.SideEffectScope == "workspace" {
@@ -312,3 +320,11 @@ func (m *PermissionManager) ConfigureRules(allowed, denied []string) {
 }
 
 func (m *PermissionManager) SetAutoApproveHighRisk(value bool) { m.autoApproveHighRisk = value }
+
+// SetAlwaysAskTerminal requires per-call approval for every non-read-only terminal
+// command in modes that can execute it. Deny decisions remain authoritative.
+func (m *PermissionManager) SetAlwaysAskTerminal(value bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.alwaysAskTerminal = value
+}

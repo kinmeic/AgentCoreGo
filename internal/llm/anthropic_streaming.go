@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -54,11 +55,13 @@ type anthropicStreamEvent struct {
 	Message      *anthropicResponse `json:"message"`
 	ContentBlock *anthropicBlock    `json:"content_block"`
 	Delta        struct {
-		Type        string `json:"type"`
-		Text        string `json:"text"`
-		PartialJSON string `json:"partial_json"`
-		StopReason  string `json:"stop_reason"`
-	} `json:"delta"`
+			Type        string `json:"type"`
+			Text        string `json:"text"`
+			Thinking    string `json:"thinking"`
+			Signature   string `json:"signature"`
+			PartialJSON string `json:"partial_json"`
+			StopReason  string `json:"stop_reason"`
+		} `json:"delta"`
 	Usage *anthropicUsage `json:"usage"`
 }
 
@@ -126,6 +129,11 @@ func parseAnthropicStream(ctx context.Context, reader io.Reader, out chan<- Stre
 				if block.Text != "" && !send(StreamChunk{Content: block.Text}) {
 					return false
 				}
+			case "thinking", "redacted_thinking":
+				hasContent = true
+				if block.Thinking != "" && !send(StreamChunk{Reasoning: block.Thinking}) {
+					return false
+				}
 			case "tool_use":
 				if block.ID == "" || block.Name == "" || ids[block.ID] {
 					return fail(fmt.Errorf("invalid Anthropic streamed tool_use"))
@@ -158,6 +166,8 @@ func parseAnthropicStream(ctx context.Context, reader io.Reader, out chan<- Stre
 						}
 					} else if _, err := toolInput(input); err != nil {
 						return fail(fmt.Errorf("incomplete Anthropic tool input: %w", err))
+					} else {
+						state.block.Input = json.RawMessage(input)
 					}
 				}
 				return true
@@ -167,9 +177,23 @@ func parseAnthropicStream(ctx context.Context, reader io.Reader, out chan<- Stre
 				if state.block.Type != "text" {
 					return fail(fmt.Errorf("Anthropic text delta has a non-text block"))
 				}
+				state.block.Text += event.Delta.Text
 				if event.Delta.Text != "" && !send(StreamChunk{Content: event.Delta.Text}) {
 					return false
 				}
+			case "thinking_delta":
+				if state.block.Type != "thinking" {
+					return fail(fmt.Errorf("Anthropic thinking delta has a non-thinking block"))
+				}
+				state.block.Thinking += event.Delta.Thinking
+				if event.Delta.Thinking != "" && !send(StreamChunk{Reasoning: event.Delta.Thinking}) {
+					return false
+				}
+			case "signature_delta":
+				if state.block.Type != "thinking" {
+					return fail(fmt.Errorf("Anthropic signature delta has a non-thinking block"))
+				}
+				state.block.Signature += event.Delta.Signature
 			case "input_json_delta":
 				if state.block.Type != "tool_use" {
 					return fail(fmt.Errorf("Anthropic input delta has a non-tool block"))
@@ -211,7 +235,20 @@ func parseAnthropicStream(ctx context.Context, reader io.Reader, out chan<- Stre
 					return fail(fmt.Errorf("Anthropic message_stop has an open content block"))
 				}
 			}
-			chunk := StreamChunk{FinishReason: finishReason}
+			indexes := make([]int, 0, len(blocks))
+			for index := range blocks {
+				indexes = append(indexes, index)
+			}
+			sort.Ints(indexes)
+			ordered := make([]anthropicBlock, 0, len(indexes))
+			for _, index := range indexes {
+				ordered = append(ordered, blocks[index].block)
+			}
+			providerState, err := anthropicStateFromBlocks(ordered)
+			if err != nil {
+				return fail(err)
+			}
+			chunk := StreamChunk{FinishReason: finishReason, ProviderState: providerState}
 			if hasUsage {
 				chunk.Usage = usage.tokens()
 			}

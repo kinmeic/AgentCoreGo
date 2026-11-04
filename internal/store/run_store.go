@@ -159,7 +159,7 @@ func (s *SQLite) GetLogsBefore(conversationID string, beforeID int64, limit int)
 		beforeID = int64(^uint64(0) >> 1)
 	}
 	rows, err := s.db.Query(`SELECT id, conversation_id, run_id, role, content, tool_calls,
-		tool_call_id, status, intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at
+		tool_call_id, status, intent, actions, prompt_tokens, completion_tokens, context_tokens, created_at, provider_state
 		FROM (SELECT * FROM conversation_logs WHERE conversation_id = ? AND id < ?
 		ORDER BY id DESC LIMIT ?) ORDER BY id ASC`, conversationID, beforeID, limit)
 	if err != nil {
@@ -184,7 +184,7 @@ func (s *SQLite) SearchLogs(conversationID, query string, limit int) ([]*model.C
 	}
 	rows, err := s.db.Query(`SELECT l.id, l.conversation_id, l.run_id, l.role, l.content,
 		l.tool_calls, l.tool_call_id, l.status, l.intent, l.actions, l.prompt_tokens,
-		l.completion_tokens, l.context_tokens, l.created_at FROM `+from+
+		l.completion_tokens, l.context_tokens, l.created_at, l.provider_state FROM `+from+
 		` WHERE `+where+` AND `+match+` ORDER BY l.id DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
@@ -197,13 +197,16 @@ func scanLogs(rows *sql.Rows) ([]*model.ConversationLog, error) {
 	var logs []*model.ConversationLog
 	for rows.Next() {
 		var log model.ConversationLog
-		var runID, toolCalls, toolCallID, status, actions sql.NullString
+		var runID, toolCalls, toolCallID, status, actions, providerState sql.NullString
 		if err := rows.Scan(&log.ID, &log.ConversationID, &runID, &log.Role, &log.Content,
 			&toolCalls, &toolCallID, &status, &log.Intent, &actions, &log.PromptTokens,
-			&log.CompletionTokens, &log.ContextTokens, &log.CreatedAt); err != nil {
+			&log.CompletionTokens, &log.ContextTokens, &log.CreatedAt, &providerState); err != nil {
 			return nil, err
 		}
 		log.RunID, log.ToolCallID, log.Status = runID.String, toolCallID.String, status.String
+		if providerState.Valid && providerState.String != "" {
+			log.ProviderState = json.RawMessage(providerState.String)
+		}
 		if toolCalls.Valid && toolCalls.String != "" {
 			if err := json.Unmarshal([]byte(toolCalls.String), &log.ToolCalls); err != nil {
 				return nil, fmt.Errorf("decode tool calls for log %d: %w", log.ID, err)

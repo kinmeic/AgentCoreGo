@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"github.com/coder/websocket"
 	"log"
 	"net/http"
@@ -363,11 +364,40 @@ func (s *Server) handleUpdateConversation(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.store.ArchiveConversation(id); err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+	permanent := false
+	if raw := r.URL.Query().Get("permanent"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "permanent must be true or false")
+			return
+		}
+		permanent = value
+	}
+	if !permanent {
+		if err := s.store.ArchiveConversation(id); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]string{"status": "archived"})
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]string{"status": "archived"})
+	workflowActive := s.services.Workflow != nil && s.services.Workflow.HasActive(id)
+	if s.orchestrator.HasActiveConversation(id) || workflowActive {
+		respondError(w, http.StatusConflict, "conversation has active runs; stop them and wait for a terminal status before permanent deletion")
+		return
+	}
+	if err := s.store.PermanentlyDeleteConversation(id); err != nil {
+		switch {
+		case errors.Is(err, store.ErrConversationNotFound):
+			respondError(w, http.StatusNotFound, "conversation not found")
+		case errors.Is(err, store.ErrConversationActive):
+			respondError(w, http.StatusConflict, "conversation has active runs; stop them and wait for a terminal status before permanent deletion")
+		default:
+			respondError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // --- Memory Handlers ---

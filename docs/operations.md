@@ -34,6 +34,28 @@ journalctl -u agent-core -f
 
 不要同时把 `StandardOutput=append:` 和 journalctl 当成两份完整日志来源；选择一种并配置轮转。提供 [deploy/logrotate.conf](../deploy/logrotate.conf) 示例。
 
+## 可选免密 sudo（高风险）
+
+默认 [deploy/agent-core.service](../deploy/agent-core.service) 不启用 sudo，也不应把主服务改成 root。只有在明确需要终端执行特权运维命令时，才手工应用 [deploy/agent-core.service.d/sudo.conf](../deploy/agent-core.service.d/sudo.conf)。该 drop-in 保留 `User=agent-core` / `Group=agent-core`，但会关闭 `NoNewPrivileges`、SUID/SGID 限制、文件系统/ Home /设备/内核/cgroup 保护等阻断 sudo 或系统配置的硬化项，因此会显著扩大主机失陷影响。
+
+必须同时满足：
+
+1. 配置 `permission.alwaysAskTerminal: true`，让所有非只读终端命令逐次审批；不要依赖 `allowedTools`、`autoApproveHighRisk`、yolo 或会话授权跳过提示。
+2. 根据 [deploy/agent-core.sudoers.example](../deploy/agent-core.sudoers.example) 用 `visudo` 手工审核并安装窄规则。示例不会自动安装；先核对实际命令绝对路径，优先固定命令和固定参数。
+3. 确保 `agent-core` 账号可通过 `sudo -n` 非交互执行且只能执行获准命令。不要启用需要密码或 TTY 的规则，因为工具无法安全完成交互式密码输入。
+4. 明确接受 drop-in 的隔离回退。示例中注释的 unrestricted `NOPASSWD: ALL` 等价于把主机 root 控制权交给能以 agent-core 执行命令的任何主体，不应作为便利默认值。
+
+安装 drop-in 的参考命令（仅在完成上述评审后执行）：
+
+```bash
+sudo install -d -m 0755 /etc/systemd/system/agent-core.service.d
+sudo install -m 0644 deploy/agent-core.service.d/sudo.conf /etc/systemd/system/agent-core.service.d/sudo.conf
+sudo systemctl daemon-reload
+sudo systemctl restart agent-core
+```
+
+CLI 审批会显示命令 preview，但 preview 不是安全审查或沙箱。撤销时停止服务，删除该 drop-in 和对应 sudoers 规则，再执行 `daemon-reload` 并重启。
+
 ## Caddy
 
 ```caddyfile

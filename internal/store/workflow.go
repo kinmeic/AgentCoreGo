@@ -30,8 +30,9 @@ type WorkflowNodeRecord struct {
 
 func (s *SQLite) SaveWorkflow(record *WorkflowDefinitionRecord) error {
 	_, err := s.db.Exec(`INSERT INTO workflow_runs(id, definition, definition_digest, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at`,
-		record.ID, string(record.Definition), record.DefinitionDigest, record.Status, record.CreatedAt, time.Now())
+		SELECT ?, ?, ?, ?, ?, ? FROM conversations WHERE id = ?
+		ON CONFLICT(id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at`,
+		record.ID, string(record.Definition), record.DefinitionDigest, record.Status, record.CreatedAt, time.Now(), record.ID)
 	return err
 }
 

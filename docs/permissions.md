@@ -72,3 +72,17 @@ permission:
 旧 `security.policies` YAML 已删除，不能继续使用。字符串工具规则不替代 OS 隔离。
 
 Guarded 的终端规则保留服务端保守边界：无法证明只读的本地 shell 命令每次询问，不能用会话授权跳过。参考 ZCode 使用更细的危险 Bash 语法匹配器；Go 服务不会把未实现的匹配器当作已具备能力。普通非终端工具仍按 guarded 语义处理。
+
+## 终端逐次审批与 sudo
+
+```yaml
+permission:
+  mode: build
+  alwaysAskTerminal: true
+```
+
+`alwaysAskTerminal` 默认为 `false`。开启后，`build`、`edit`、`guarded`、`yolo` 中每个无法保守判定为只读的 `run_terminal` 调用都必须逐次审批。`allowedTools`、`autoApproveHighRisk` 和 `scope=conversation` 会话授权都不能跳过；即使客户端选择“整个会话允许”，下一次非只读终端调用仍会询问。CLI 会在审批问题前显示事件已有的脱敏参数 preview。
+
+该开关不会把 deny 提升为 ask：`plan`、`auto`、只读 run 和 `disallowedTools` 仍按原规则拒绝。只读终端豁免保持不变；`auto` 本身仍拒绝工具。开启此选项不会授予 OS 权限，也不能替代终端隔离。
+
+仅在确需特权运维时配置免密 sudo：主服务仍必须以低权限 `agent-core` 账号运行，要求 `sudo -n` 和 `alwaysAskTerminal: true`，并优先使用固定命令、固定参数的窄 sudoers 规则。可选 drop-in 会主动削弱 systemd 隔离，见[部署文档](operations.md#可选免密-sudo高风险)与 [sudoers 示例](../deploy/agent-core.sudoers.example)。

@@ -32,11 +32,11 @@ func (s *SQLite) CloneConversation(sourceID string) (*model.Conversation, error)
 		return nil, err
 	}
 	if _, err := tx.Exec(`INSERT INTO conversation_logs(
-		conversation_id, run_id, role, content, tool_calls, tool_call_id, status, intent, actions,
-		prompt_tokens, completion_tokens, context_tokens, created_at)
-		SELECT ?, run_id, role, content, tool_calls, tool_call_id, status, intent, actions,
-		prompt_tokens, completion_tokens, context_tokens, created_at FROM conversation_logs
-		WHERE conversation_id = ? ORDER BY id`, clone.ID, sourceID); err != nil {
+			conversation_id, run_id, role, content, tool_calls, tool_call_id, status, intent, actions,
+			prompt_tokens, completion_tokens, context_tokens, created_at, provider_state)
+			SELECT ?, run_id, role, content, tool_calls, tool_call_id, status, intent, actions,
+			prompt_tokens, completion_tokens, context_tokens, created_at, provider_state FROM conversation_logs
+			WHERE conversation_id = ? ORDER BY id`, clone.ID, sourceID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
