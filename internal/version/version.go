@@ -2,4 +2,4 @@
 package version
 
 // Version is overridden by the release build from its Git tag.
-var Version = "0.4.0"
+var Version = "0.6.2"

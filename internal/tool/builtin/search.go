@@ -15,10 +15,15 @@ import (
 )
 
 // GlobTool finds workspace paths using *, ?, and ** patterns.
-type GlobTool struct{ workDir string }
+type GlobTool struct {
+	workDir               string
+	allowOutsideWorkspace bool
+}
 
-func NewGlobTool(workDir string) *GlobTool { return &GlobTool{workDir: workDir} }
-func (t *GlobTool) Name() string           { return "glob_files" }
+func NewGlobTool(workDir string, allowOutsideWorkspace ...bool) *GlobTool {
+	return &GlobTool{workDir: workDir, allowOutsideWorkspace: outsideWorkspaceEnabled(allowOutsideWorkspace)}
+}
+func (t *GlobTool) Name() string { return "glob_files" }
 func (t *GlobTool) Capabilities() tool.Capabilities {
 	return tool.Capabilities{ReadOnly: true, ConcurrentSafe: true, SideEffectScope: "workspace", RiskLevel: "low", Timeout: 30 * time.Second}
 }
@@ -33,7 +38,7 @@ func (t *GlobTool) Execute(ctx context.Context, args map[string]any) (string, er
 	root := t.workDir
 	if value, ok := args["path"].(string); ok && value != "" {
 		var err error
-		root, err = sandbox.ValidatePath(value, t.workDir, false)
+		root, err = sandbox.ValidatePathWithAccess(value, t.workDir, false, t.allowOutsideWorkspace)
 		if err != nil {
 			return "", err
 		}
@@ -107,10 +112,15 @@ func compileGlob(pattern string) (*regexp.Regexp, error) {
 }
 
 // GrepTool searches UTF-8 text with Go's bounded RE2 regular expressions.
-type GrepTool struct{ workDir string }
+type GrepTool struct {
+	workDir               string
+	allowOutsideWorkspace bool
+}
 
-func NewGrepTool(workDir string) *GrepTool { return &GrepTool{workDir: workDir} }
-func (t *GrepTool) Name() string           { return "grep_files" }
+func NewGrepTool(workDir string, allowOutsideWorkspace ...bool) *GrepTool {
+	return &GrepTool{workDir: workDir, allowOutsideWorkspace: outsideWorkspaceEnabled(allowOutsideWorkspace)}
+}
+func (t *GrepTool) Name() string { return "grep_files" }
 func (t *GrepTool) Capabilities() tool.Capabilities {
 	return tool.Capabilities{ReadOnly: true, ConcurrentSafe: true, SideEffectScope: "workspace", RiskLevel: "low", Timeout: 45 * time.Second, MaxOutputBytes: 100_000}
 }
@@ -133,7 +143,7 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) (string, er
 	}
 	root := t.workDir
 	if value, ok := args["path"].(string); ok && value != "" {
-		root, err = sandbox.ValidatePath(value, t.workDir, false)
+		root, err = sandbox.ValidatePathWithAccess(value, t.workDir, false, t.allowOutsideWorkspace)
 		if err != nil {
 			return "", err
 		}

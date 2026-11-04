@@ -16,18 +16,20 @@ import (
 
 // TerminalTool executes shell commands.
 type TerminalTool struct {
-	workDir         string
-	workspaceDir    string
-	timeout         time.Duration
-	processRegistry *tool.ProcessRegistry
+	workDir               string
+	workspaceDir          string
+	allowOutsideWorkspace bool
+	timeout               time.Duration
+	processRegistry       *tool.ProcessRegistry
 }
 
-func NewTerminalTool(workDir string, processRegistry *tool.ProcessRegistry) *TerminalTool {
+func NewTerminalTool(workDir string, processRegistry *tool.ProcessRegistry, allowOutsideWorkspace ...bool) *TerminalTool {
 	return &TerminalTool{
-		workDir:         workDir,
-		workspaceDir:    workDir,
-		timeout:         120 * time.Second,
-		processRegistry: processRegistry,
+		workDir:               workDir,
+		workspaceDir:          workDir,
+		allowOutsideWorkspace: outsideWorkspaceEnabled(allowOutsideWorkspace),
+		timeout:               120 * time.Second,
+		processRegistry:       processRegistry,
 	}
 }
 
@@ -67,7 +69,7 @@ func (t *TerminalTool) Execute(ctx context.Context, args map[string]any) (string
 
 	workDir := t.workDir
 	if wd, ok := args["working_dir"].(string); ok && wd != "" {
-		validated, err := sandbox.ValidateWorkingDir(wd, t.workspaceDir)
+		validated, err := sandbox.ValidateWorkingDirWithAccess(wd, t.workspaceDir, t.allowOutsideWorkspace)
 		if err != nil {
 			return "", fmt.Errorf("invalid working_dir: %w", err)
 		}

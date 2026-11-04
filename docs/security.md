@@ -18,7 +18,7 @@ Bearer 比较使用常量时间。`/health` 是公开 liveness；`/ready`、指�
 
 ## Workspace 与文件
 
-文件工具执行 cleaned path、workspace 边界、已有符号链接和“尚不存在目录的最近祖先”检查。写入采用：
+文件工具默认执行 cleaned path、workspace 边界、已有符号链接和“尚不存在目录的最近祖先”检查。`workspace.allowOutsideWorkspace: true` 可为本机 loopback 服务关闭文件工具的 workspace 边界：工具可以使用工作区外的路径，相对路径仍从 workspace 开始；工作区管理与快照 API 仍保持 workspace 边界。此模式会让 Agent 能读取、修改、删除当前 OS 用户有权限访问的工作区外文件，应只在可信的本地服务上开启。写入采用：
 
 1. 读取文件并计算 SHA-256 revision。
 2. 要求 `expected_revision`，检测覆盖前外部修改。

@@ -26,7 +26,7 @@
 - **快照与 IDE 集成**：完整文件树快照、冲突检查、内容完整性校验与补偿恢复，提供 Workspace/Git/运行/变更管理 API。
 - **model-io 与评测**：原始 provider wire、工具/文件轨迹、默认脱敏诊断采集、独立隔离 benchmark 与 grader。
 
-> **安全边界**：文件工具有 workspace 路径与符号链接防护；终端命令拥有 AgentCore 进程的操作系统权限，**不是 OS 沙箱**。非 loopback 监听必须设置 `AUTH_TOKEN` 且禁用终端。当前会话、记忆和工具注册表是单租户共享状态，不是多租户隔离边界。
+> **安全边界**：文件工具默认有 workspace 路径与符号链接防护；可通过 `workspace.allowOutsideWorkspace` 为 loopback 服务显式开放工作区外路径。终端命令拥有 AgentCore 进程的操作系统权限，**不是 OS 沙箱**。非 loopback 监听必须设置 `AUTH_TOKEN` 且禁用终端。当前会话、记忆和工具注册表是单租户共享状态，不是多租户隔离边界。
 
 ## 快速开始
 

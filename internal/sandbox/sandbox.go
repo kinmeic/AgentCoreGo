@@ -10,6 +10,13 @@ import (
 // ValidatePath validates paths and resolves every existing ancestor, including
 // ancestors of directories that still need to be created.
 func ValidatePath(requestedPath, workspaceDir string, forWrite bool) (string, error) {
+	return ValidatePathWithAccess(requestedPath, workspaceDir, forWrite, false)
+}
+
+// ValidatePathWithAccess validates and resolves a file path. When
+// allowOutsideWorkspace is true, paths outside workspaceDir are accepted;
+// relative paths still resolve from workspaceDir.
+func ValidatePathWithAccess(requestedPath, workspaceDir string, forWrite, allowOutsideWorkspace bool) (string, error) {
 	resolved := requestedPath
 	if !filepath.IsAbs(resolved) {
 		resolved = filepath.Join(workspaceDir, resolved)
@@ -42,7 +49,7 @@ func ValidatePath(requestedPath, workspaceDir string, forWrite bool) (string, er
 			return "", fmt.Errorf("resolve path: %w", err)
 		}
 	}
-	if !isInsideWorkspace(resolved, evalWorkspace) {
+	if !allowOutsideWorkspace && !isInsideWorkspace(resolved, evalWorkspace) {
 		return "", fmt.Errorf("path %q is outside the workspace directory", requestedPath)
 	}
 	return resolved, nil
@@ -73,7 +80,13 @@ func resolveExistingAncestor(path string) (string, error) {
 
 // ValidateWorkingDir validates that the requested working directory is within the workspace.
 func ValidateWorkingDir(requestedDir, workspaceDir string) (string, error) {
-	resolved, err := ValidatePath(requestedDir, workspaceDir, false)
+	return ValidateWorkingDirWithAccess(requestedDir, workspaceDir, false)
+}
+
+// ValidateWorkingDirWithAccess validates the initial working directory for a
+// terminal command, optionally allowing directories outside workspaceDir.
+func ValidateWorkingDirWithAccess(requestedDir, workspaceDir string, allowOutsideWorkspace bool) (string, error) {
+	resolved, err := ValidatePathWithAccess(requestedDir, workspaceDir, false, allowOutsideWorkspace)
 	if err != nil {
 		return "", err
 	}
@@ -146,7 +159,7 @@ const maxSoulSize = 10000
 const defaultSoulContent = `# Agent Guidelines
 
 ## Identity
-You are a helpful AI assistant operating within a sandboxed workspace.
+You are a helpful AI assistant operating with the filesystem access policy configured by AgentCore.
 
 ## Communication
 - Be concise and direct
@@ -159,6 +172,6 @@ You are a helpful AI assistant operating within a sandboxed workspace.
 - When writing files, organize them logically within the workspace
 
 ## Constraints
-- All file operations are confined to the workspace directory
-- Do not attempt to access paths outside the workspace
+- Use workspace-relative paths by default; relative paths resolve from the configured workspace.
+- Follow the effective filesystem access policy supplied by AgentCore for absolute paths outside the workspace.
 `

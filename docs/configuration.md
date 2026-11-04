@@ -43,7 +43,7 @@
 
 `server` 默认 `host: 127.0.0.1`、`port: 3030`、空 token、请求上限 1048576 字节、空 CORS 列表、每 IP 每分钟 300 HTTP 请求、最多 10 个并发 run；`terminalEnabled: true`。非 loopback 必须设置 token 并关闭终端。WebSocket 另外限制每连接 10 个在途请求、8 个订阅、128 帧发送队列和 5 秒写入超时；超限断开后从持久 cursor 恢复。CORS 仅精确 origin。这些是服务部署边界，不是 ZCode RuntimeConfig 中的模型运行限制。
 
-`workspace.path` 默认为当前目录；文件工具、项目发现和 `AGENTS.md` 共用此根目录。服务配置显式选择 workspace 后不会让项目文件修改它。ZCode 的桌面目录默认值与本项目隔离，避免直接打开其 session DB。
+`workspace.path` 默认为当前目录；文件工具、项目发现和 `AGENTS.md` 共用此根目录。`workspace.allowOutsideWorkspace` 默认为 `false`；设为 `true` 后，内置文件读写、列表、搜索、Git 和终端 `working_dir` 可以访问工作区外的路径，相对路径仍从 `workspace.path` 解析。此选项仅允许服务绑定 loopback 地址；它不改变快照/工作区管理 API 的根目录，也不会扩大 AgentCore 进程本身的操作系统权限。服务配置显式选择 workspace 后不会让项目文件修改它。ZCode 的桌面目录默认值与本项目隔离，避免直接打开其 session DB。
 
 ## 模型连接
 

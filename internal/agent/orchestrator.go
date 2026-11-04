@@ -725,6 +725,11 @@ func (o *Orchestrator) buildMessages(ctx context.Context, convID string, userMsg
 			systemMessage.Content += "\n\n## Available Skills\n" + metadata
 		}
 	}
+	if o.cfg.Workspace.AllowOutsideWorkspace {
+		systemMessage.Content += "\n\n## Filesystem Access Policy\nBuilt-in file tools and the initial terminal working directory may use paths outside the configured workspace. Relative paths start there. Use external paths when the user's task identifies them; do not assume every external file is part of the task. Terminal commands still run with AgentCore's operating-system permissions."
+	} else {
+		systemMessage.Content += "\n\n## Filesystem Access Policy\nBuilt-in file tools reject paths outside the configured workspace, and the initial terminal working directory must be inside it. Relative paths start there. Terminal commands still run with AgentCore's operating-system permissions and are not confined to the workspace."
+	}
 	messages := []model.Message{systemMessage}
 	if summary != "" {
 		messages = append(messages, model.Message{Role: model.RoleSystem, Content: summary})

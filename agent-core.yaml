@@ -25,6 +25,7 @@ llm:
 
 workspace:
   path: "." # AGENTS.md and file tools share this root.
+  allowOutsideWorkspace: false # If true, built-in file tools accept paths outside path; loopback only.
 storage:
   dir: ./data # Isolated Go service data; never opens ZCode Desktop's DB by default.
   sessionDbPath: ./data/agent.db

@@ -25,10 +25,15 @@ const maxManagedFileBytes = 2 * 1024 * 1024
 var fileLocks sync.Map
 
 // FileReadTool reads file contents with a revision used for safe subsequent writes.
-type FileReadTool struct{ workDir string }
+type FileReadTool struct {
+	workDir               string
+	allowOutsideWorkspace bool
+}
 
-func NewFileReadTool(workDir string) *FileReadTool { return &FileReadTool{workDir: workDir} }
-func (t *FileReadTool) Name() string               { return "read_file" }
+func NewFileReadTool(workDir string, allowOutsideWorkspace ...bool) *FileReadTool {
+	return &FileReadTool{workDir: workDir, allowOutsideWorkspace: outsideWorkspaceEnabled(allowOutsideWorkspace)}
+}
+func (t *FileReadTool) Name() string { return "read_file" }
 func (t *FileReadTool) Capabilities() tool.Capabilities {
 	return tool.Capabilities{ReadOnly: true, ConcurrentSafe: true, SideEffectScope: "workspace", RiskLevel: "low", Timeout: 30 * time.Second, MaxOutputBytes: 60_000}
 }
@@ -43,7 +48,7 @@ func (t *FileReadTool) Schema() tool.ToolSchema {
 	}}
 }
 func (t *FileReadTool) Execute(_ context.Context, args map[string]any) (string, error) {
-	path, err := sandbox.ValidatePath(args["path"].(string), t.workDir, false)
+	path, err := sandbox.ValidatePathWithAccess(args["path"].(string), t.workDir, false, t.allowOutsideWorkspace)
 	if err != nil {
 		return "", err
 	}
@@ -77,10 +82,15 @@ func (t *FileReadTool) Execute(_ context.Context, args map[string]any) (string, 
 }
 
 // FileWriteTool atomically creates or overwrites files with optimistic concurrency checks.
-type FileWriteTool struct{ workDir string }
+type FileWriteTool struct {
+	workDir               string
+	allowOutsideWorkspace bool
+}
 
-func NewFileWriteTool(workDir string) *FileWriteTool { return &FileWriteTool{workDir: workDir} }
-func (t *FileWriteTool) Name() string                { return "write_file" }
+func NewFileWriteTool(workDir string, allowOutsideWorkspace ...bool) *FileWriteTool {
+	return &FileWriteTool{workDir: workDir, allowOutsideWorkspace: outsideWorkspaceEnabled(allowOutsideWorkspace)}
+}
+func (t *FileWriteTool) Name() string { return "write_file" }
 func (t *FileWriteTool) Capabilities() tool.Capabilities {
 	return tool.Capabilities{NeedsApproval: true, SideEffectScope: "workspace", RiskLevel: "medium", Timeout: 30 * time.Second, MaxOutputBytes: 100_000}
 }
@@ -96,7 +106,7 @@ func (t *FileWriteTool) Schema() tool.ToolSchema {
 	}}
 }
 func (t *FileWriteTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	path, err := sandbox.ValidatePath(args["path"].(string), t.workDir, true)
+	path, err := sandbox.ValidatePathWithAccess(args["path"].(string), t.workDir, true, t.allowOutsideWorkspace)
 	if err != nil {
 		return "", err
 	}
@@ -316,10 +326,15 @@ func truncateUTF8(value string, maximum int) string {
 }
 
 // FileListTool lists directory contents without following directory symlinks.
-type FileListTool struct{ workDir string }
+type FileListTool struct {
+	workDir               string
+	allowOutsideWorkspace bool
+}
 
-func NewFileListTool(workDir string) *FileListTool { return &FileListTool{workDir: workDir} }
-func (t *FileListTool) Name() string               { return "list_files" }
+func NewFileListTool(workDir string, allowOutsideWorkspace ...bool) *FileListTool {
+	return &FileListTool{workDir: workDir, allowOutsideWorkspace: outsideWorkspaceEnabled(allowOutsideWorkspace)}
+}
+func (t *FileListTool) Name() string { return "list_files" }
 func (t *FileListTool) Capabilities() tool.Capabilities {
 	return tool.Capabilities{ReadOnly: true, ConcurrentSafe: true, SideEffectScope: "workspace", RiskLevel: "low", Timeout: 30 * time.Second, MaxOutputBytes: 100_000}
 }
@@ -336,7 +351,7 @@ func (t *FileListTool) Execute(_ context.Context, args map[string]any) (string, 
 	path := t.workDir
 	if value, ok := args["path"].(string); ok && value != "" {
 		var err error
-		path, err = sandbox.ValidatePath(value, t.workDir, false)
+		path, err = sandbox.ValidatePathWithAccess(value, t.workDir, false, t.allowOutsideWorkspace)
 		if err != nil {
 			return "", err
 		}

@@ -126,7 +126,7 @@ func main() {
 	})
 
 	// Register builtin tools
-	if err := builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry, cfg.Tools.TerminalEnabled); err != nil {
+	if err := builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry, cfg.Tools.TerminalEnabled, cfg.Workspace.AllowOutsideWorkspace); err != nil {
 		log.Fatalf("[agent-core] Failed to register builtin tools: %v", err)
 	}
 	if cfg.Tools.TerminalEnabled {
@@ -487,7 +487,7 @@ func runMCPServer() {
 		return permissions.Authorize(ctx, registered, args)
 	})
 
-	if err := builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry, cfg.Tools.TerminalEnabled); err != nil {
+	if err := builtin.RegisterAll(toolRegistry, cfg.Tools.WorkDir, processRegistry, cfg.Tools.TerminalEnabled, cfg.Workspace.AllowOutsideWorkspace); err != nil {
 		log.Fatalf("[agent-core] Failed to register builtin tools: %v", err)
 	}
 

@@ -14,10 +14,15 @@ import (
 )
 
 // GitTool exposes a deliberately small, read-only Git surface.
-type GitTool struct{ workDir string }
+type GitTool struct {
+	workDir               string
+	allowOutsideWorkspace bool
+}
 
-func NewGitTool(workDir string) *GitTool { return &GitTool{workDir: workDir} }
-func (t *GitTool) Name() string          { return "git_readonly" }
+func NewGitTool(workDir string, allowOutsideWorkspace ...bool) *GitTool {
+	return &GitTool{workDir: workDir, allowOutsideWorkspace: outsideWorkspaceEnabled(allowOutsideWorkspace)}
+}
+func (t *GitTool) Name() string { return "git_readonly" }
 func (t *GitTool) Capabilities() tool.Capabilities {
 	return tool.Capabilities{ReadOnly: true, ConcurrentSafe: true, SideEffectScope: "workspace", RiskLevel: "low", Timeout: 35 * time.Second, MaxOutputBytes: 120_000}
 }
@@ -35,7 +40,7 @@ func (t *GitTool) Execute(ctx context.Context, args map[string]any) (string, err
 	workDir := t.workDir
 	if path, ok := args["path"].(string); ok && path != "" {
 		var err error
-		workDir, err = sandbox.ValidateWorkingDir(path, t.workDir)
+		workDir, err = sandbox.ValidateWorkingDirWithAccess(path, t.workDir, t.allowOutsideWorkspace)
 		if err != nil {
 			return "", err
 		}

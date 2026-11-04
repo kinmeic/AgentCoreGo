@@ -42,8 +42,9 @@ type Config struct {
 }
 
 type WorkspaceConfig struct {
-	Path     string `yaml:"path" json:"path"`
-	SoulFile string `yaml:"-" json:"-"`
+	Path                  string `yaml:"path" json:"path"`
+	AllowOutsideWorkspace bool   `yaml:"allowOutsideWorkspace" json:"allowOutsideWorkspace"`
+	SoulFile              string `yaml:"-" json:"-"`
 }
 type ServerConfig struct {
 	Host               string   `yaml:"host" json:"host"`
@@ -462,6 +463,9 @@ func (c *Config) Validate(mode ValidateMode) error {
 	if mode == ModeHTTP {
 		host := c.Server.Host
 		loopback := host == "127.0.0.1" || host == "localhost" || host == "::1" || host == ""
+		if c.Workspace.AllowOutsideWorkspace && !loopback {
+			return fmt.Errorf("security: workspace.allowOutsideWorkspace requires a loopback server binding")
+		}
 		if !loopback && c.Server.AuthToken == "" {
 			return fmt.Errorf("security: non-loopback binding requires AUTH_TOKEN")
 		}

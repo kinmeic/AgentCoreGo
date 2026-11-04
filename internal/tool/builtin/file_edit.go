@@ -12,10 +12,15 @@ import (
 )
 
 // FileEditTool performs exact, revision-checked string replacement.
-type FileEditTool struct{ workDir string }
+type FileEditTool struct {
+	workDir               string
+	allowOutsideWorkspace bool
+}
 
-func NewFileEditTool(workDir string) *FileEditTool { return &FileEditTool{workDir: workDir} }
-func (t *FileEditTool) Name() string               { return "edit_file" }
+func NewFileEditTool(workDir string, allowOutsideWorkspace ...bool) *FileEditTool {
+	return &FileEditTool{workDir: workDir, allowOutsideWorkspace: outsideWorkspaceEnabled(allowOutsideWorkspace)}
+}
+func (t *FileEditTool) Name() string { return "edit_file" }
 func (t *FileEditTool) Capabilities() tool.Capabilities {
 	return tool.Capabilities{NeedsApproval: true, SideEffectScope: "workspace", RiskLevel: "medium", Timeout: 30 * time.Second}
 }
@@ -30,7 +35,7 @@ func (t *FileEditTool) Schema() tool.ToolSchema {
 	}}
 }
 func (t *FileEditTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	path, err := sandbox.ValidatePath(args["path"].(string), t.workDir, false)
+	path, err := sandbox.ValidatePathWithAccess(args["path"].(string), t.workDir, false, t.allowOutsideWorkspace)
 	if err != nil {
 		return "", err
 	}
@@ -62,10 +67,15 @@ func (t *FileEditTool) Execute(ctx context.Context, args map[string]any) (string
 }
 
 // FileDeleteTool deletes one regular file after verifying its revision.
-type FileDeleteTool struct{ workDir string }
+type FileDeleteTool struct {
+	workDir               string
+	allowOutsideWorkspace bool
+}
 
-func NewFileDeleteTool(workDir string) *FileDeleteTool { return &FileDeleteTool{workDir: workDir} }
-func (t *FileDeleteTool) Name() string                 { return "delete_file" }
+func NewFileDeleteTool(workDir string, allowOutsideWorkspace ...bool) *FileDeleteTool {
+	return &FileDeleteTool{workDir: workDir, allowOutsideWorkspace: outsideWorkspaceEnabled(allowOutsideWorkspace)}
+}
+func (t *FileDeleteTool) Name() string { return "delete_file" }
 func (t *FileDeleteTool) Capabilities() tool.Capabilities {
 	return tool.Capabilities{Destructive: true, NeedsApproval: true, SideEffectScope: "workspace", RiskLevel: "high", Timeout: 30 * time.Second}
 }
@@ -78,7 +88,7 @@ func (t *FileDeleteTool) Schema() tool.ToolSchema {
 	}}
 }
 func (t *FileDeleteTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	path, err := sandbox.ValidatePath(args["path"].(string), t.workDir, false)
+	path, err := sandbox.ValidatePathWithAccess(args["path"].(string), t.workDir, false, t.allowOutsideWorkspace)
 	if err != nil {
 		return "", err
 	}
@@ -103,15 +113,20 @@ func (t *FileDeleteTool) Execute(ctx context.Context, args map[string]any) (stri
 }
 
 // FileMoveTool renames a file without overwriting an existing destination.
-type FileMoveTool struct{ workDir string }
+type FileMoveTool struct {
+	workDir               string
+	allowOutsideWorkspace bool
+}
 
-func NewFileMoveTool(workDir string) *FileMoveTool { return &FileMoveTool{workDir: workDir} }
-func (t *FileMoveTool) Name() string               { return "move_file" }
+func NewFileMoveTool(workDir string, allowOutsideWorkspace ...bool) *FileMoveTool {
+	return &FileMoveTool{workDir: workDir, allowOutsideWorkspace: outsideWorkspaceEnabled(allowOutsideWorkspace)}
+}
+func (t *FileMoveTool) Name() string { return "move_file" }
 func (t *FileMoveTool) Capabilities() tool.Capabilities {
 	return tool.Capabilities{Destructive: true, NeedsApproval: true, SideEffectScope: "workspace", RiskLevel: "high", Timeout: 30 * time.Second}
 }
 func (t *FileMoveTool) Description() string {
-	return "Move a regular file inside the workspace; destination must not exist."
+	return "Move a regular file; relative paths start in the workspace and destination must not exist."
 }
 func (t *FileMoveTool) Schema() tool.ToolSchema {
 	return tool.ToolSchema{Type: "object", Required: []string{"source", "destination", "expected_revision"}, Properties: map[string]any{
@@ -120,11 +135,11 @@ func (t *FileMoveTool) Schema() tool.ToolSchema {
 	}}
 }
 func (t *FileMoveTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	source, err := sandbox.ValidatePath(args["source"].(string), t.workDir, false)
+	source, err := sandbox.ValidatePathWithAccess(args["source"].(string), t.workDir, false, t.allowOutsideWorkspace)
 	if err != nil {
 		return "", err
 	}
-	destination, err := sandbox.ValidatePath(args["destination"].(string), t.workDir, true)
+	destination, err := sandbox.ValidatePathWithAccess(args["destination"].(string), t.workDir, true, t.allowOutsideWorkspace)
 	if err != nil {
 		return "", err
 	}

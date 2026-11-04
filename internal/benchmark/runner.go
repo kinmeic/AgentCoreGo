@@ -227,7 +227,7 @@ func (r *Runner) executeAgent(ctx context.Context, plan *Plan, promptText, works
 	provider := llm.NewClient(cfg.LLM)
 	registry := tool.NewRegistry()
 	processes := tool.NewProcessRegistry()
-	if err := builtin.RegisterAll(registry, workspace, processes, false); err != nil {
+	if err := builtin.RegisterAll(registry, workspace, processes, false, cfg.Workspace.AllowOutsideWorkspace); err != nil {
 		return "", "", "", nil, 0, err
 	}
 	permissions := tool.NewPermissionManager(cfg.Tools.ApprovalMode)
