@@ -6,6 +6,7 @@ import (
 	"agent-core/internal/trust"
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -49,5 +50,9 @@ func (t *Tool) Execute(_ context.Context, args map[string]any) (string, error) {
 			return "", fmt.Errorf("skill %s requires trust for digest %s", name, status.BundleDigest)
 		}
 	}
-	return fmt.Sprintf("<skill_content name=%q>\n%s\n\nBase directory: %s\n</skill_content>", loaded.Skill.Name, loaded.Content, loaded.BaseDirectory), nil
+	content := strings.NewReplacer(
+		"${ZCODE_SKILL_DIR}", loaded.BaseDirectory,
+		"${CLAUDE_SKILL_DIR}", loaded.BaseDirectory,
+	).Replace(loaded.Content)
+	return fmt.Sprintf("<skill_content name=%q>\n%s\n\nBase directory: %s\n</skill_content>", loaded.Skill.Name, content, loaded.BaseDirectory), nil
 }
