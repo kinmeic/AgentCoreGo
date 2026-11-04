@@ -107,14 +107,14 @@ type anthropicThinking struct {
 }
 
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system,omitempty"`
-	Messages  []anthropicMessage `json:"messages"`
-	Tools     []anthropicTool    `json:"tools,omitempty"`
-	Stream    bool               `json:"stream"`
+	Model        string             `json:"model"`
+	MaxTokens    int                `json:"max_tokens"`
+	System       string             `json:"system,omitempty"`
+	Messages     []anthropicMessage `json:"messages"`
+	Tools        []anthropicTool    `json:"tools,omitempty"`
+	Stream       bool               `json:"stream"`
 	Thinking     *anthropicThinking `json:"thinking"`
-	OutputConfig map[string]string `json:"output_config,omitempty"`
+	OutputConfig map[string]string  `json:"output_config,omitempty"`
 }
 
 func toolInput(raw string) (json.RawMessage, error) {

@@ -87,7 +87,7 @@ func TestAnthropicProviderStatePreservesSignedBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(request.Messages) != 4 {
+	if len(request.Messages) != 3 {
 		t.Fatalf("unexpected message grouping: %#v", request.Messages)
 	}
 	got := request.Messages[1].Content

@@ -178,7 +178,7 @@ func (s *SQLite) SearchLogs(conversationID, query string, limit int) ([]*model.C
 	where := "l.conversation_id = ?"
 	if s.ftsEnabled {
 		from = "conversation_logs_fts AS f JOIN conversation_logs AS l ON l.id = f.rowid"
-		match = "f MATCH ?"
+		match = "conversation_logs_fts MATCH ?"
 		where = "f.conversation_id = ?"
 		args = []any{conversationID, query}
 	}

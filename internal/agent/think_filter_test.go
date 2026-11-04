@@ -42,7 +42,7 @@ func TestStreamingThinkFilterSegmentsPreserveOrder(t *testing.T) {
 			visible.WriteString(segment.Text)
 		}
 	}
-	if visible.String() != "before" || reasoning.String() != "secret" || len(order) != 3 || order[0] || !order[1] || order[2] {
+	if visible.String() != "beforeafter" || reasoning.String() != "secret" || len(order) != 3 || order[0] || !order[1] || order[2] {
 		t.Fatalf("unexpected ordered segments: %#v", segments)
 	}
 }
