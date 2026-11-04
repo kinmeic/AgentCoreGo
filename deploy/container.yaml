@@ -18,6 +18,9 @@ llm:
   context_window: 200000 # Set actual model capability; fallback follows ZCode.
   max_output_tokens: 32000 # Set actual model capability.
   reasoning_effort: ""
+  expose_reasoning: true
+  thinking_type: disabled
+  thinking_budget_tokens: 16000
   fallbacks: []
 
 workspace:
@@ -38,6 +41,7 @@ permission:
   allowedTools: []
   disallowedTools: []
   autoApproveHighRisk: false
+  alwaysAskTerminal: false
   allowMediumRiskInAuto: false
 logging:
   level: info

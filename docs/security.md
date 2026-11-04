@@ -40,6 +40,12 @@ Bearer 比较使用常量时间。`/health` 是公开 liveness；`/ready`、指�
 - Unix 按进程组清理，Windows 使用 `taskkill /T`；仍应在外层运行器设置硬超时和资源限制。
 - 不使用宿主机 Docker socket 或挂载敏感目录。
 
+### 可选 sudo 边界
+
+默认 systemd unit 禁止提权。可选 [sudo drop-in](../deploy/agent-core.service.d/sudo.conf) 会关闭多项 systemd 保护，只适用于经过独立主机风险评估的特权运维场景；服务仍须以 `agent-core` 而非 root 运行。sudoers 必须优先限定为绝对路径、固定参数的少量命令，并要求 `sudo -n` 非交互执行。仓库中的 [sudoers 示例](../deploy/agent-core.sudoers.example) 不会自动安装；其中 unrestricted `NOPASSWD: ALL` 仅作风险警示，一旦启用，能以服务账号执行命令的主体就等同于获得完整 root 控制。
+
+启用 sudo 时必须设置 `permission.alwaysAskTerminal: true`。该设置在 build/edit/guarded/yolo 中强制所有非只读终端调用逐次审批，不允许 allowedTools、autoApproveHighRisk 或 conversation grant 绕过，也不会把 plan/auto、显式 deny 或只读 run 的 deny 改成 ask。保守识别的只读命令仍有豁免；不要把 sudo 命令视作只读。审批 preview 仅帮助人工核对，不能证明命令安全，也不能替代 OS 隔离。
+
 ## MCP / Web / Host Callback
 
 默认阻断 loopback、私网、link-local、metadata 和非 HTTP 协议，DNS 解析与 dial 时再次检查。`allow_private` 是逐服务显式例外。跨源重定向被拒绝，认证 header 不转发到其他 origin。

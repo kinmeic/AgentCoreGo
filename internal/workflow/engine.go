@@ -489,6 +489,15 @@ func (e *Engine) Get(runID string) (*RunView, error) {
 func (e *Engine) List(limit int) ([]*store.WorkflowDefinitionRecord, error) {
 	return e.store.ListWorkflows(limit)
 }
+
+// HasActive reports whether the workflow is still executing or finishing.
+func (e *Engine) HasActive(runID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, active := e.active[runID]
+	return active
+}
+
 func (e *Engine) Cancel(runID string) bool {
 	e.mu.Lock()
 	cancel := e.active[runID]

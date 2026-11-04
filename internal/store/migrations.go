@@ -156,6 +156,7 @@ var schemaMigrations = []schemaMigration{
 		},
 	},
 	{version: 7, sql: []string{`DROP TABLE IF EXISTS vector_store`, `CREATE TABLE IF NOT EXISTS accepted_commands(command_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, run_id TEXT NOT NULL, conversation_id TEXT NOT NULL)`}},
+	{version: 8, sql: []string{`ALTER TABLE conversation_logs ADD COLUMN provider_state JSON`}},
 }
 
 func migrationChecksum(m schemaMigration) string {

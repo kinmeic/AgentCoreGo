@@ -82,7 +82,7 @@ func TestAnthropicCompleteConvertsHistoryAndTools(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		if request.System != "first\n\nsecond" || request.MaxTokens != 512 || request.Model != "claude-test" || request.Stream || request.Thinking["type"] != "disabled" || request.OutputConfig["effort"] != "high" {
+		if request.System != "first\n\nsecond" || request.MaxTokens != 512 || request.Model != "claude-test" || request.Stream || request.Thinking == nil || request.Thinking.Type != config.ThinkingTypeDisabled || request.OutputConfig["effort"] != "high" {
 			t.Errorf("bad request options: %#v", request)
 		}
 		if len(request.Messages) != 3 || request.Messages[2].Role != "user" || len(request.Messages[2].Content) != 3 {

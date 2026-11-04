@@ -14,6 +14,7 @@ import (
 )
 
 const anthropicVersion = "2023-06-01"
+const anthropicInterleavedThinkingBeta = "interleaved-thinking-2025-05-14"
 
 func (c *Client) requestHeaders() http.Header {
 	headers := make(http.Header)
@@ -52,12 +53,41 @@ func anthropicEndpoint(base string) (string, error) {
 type anthropicBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Data      string          `json:"data,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   any             `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+}
+
+type anthropicProviderState struct {
+	Content []anthropicBlock `json:"content"`
+}
+
+func anthropicStateFromBlocks(blocks []anthropicBlock) (json.RawMessage, error) {
+	state, err := json.Marshal(anthropicProviderState{Content: blocks})
+	if err != nil {
+		return nil, fmt.Errorf("marshal Anthropic provider state: %w", err)
+	}
+	return state, nil
+}
+
+func anthropicBlocksFromState(raw json.RawMessage) ([]anthropicBlock, error) {
+	var state anthropicProviderState
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("invalid empty Anthropic provider state")
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return nil, fmt.Errorf("decode Anthropic provider state: %w", err)
+	}
+	if len(state.Content) == 0 {
+		return nil, fmt.Errorf("Anthropic provider state has no content blocks")
+	}
+	return state.Content, nil
 }
 
 type anthropicMessage struct {
@@ -71,6 +101,11 @@ type anthropicTool struct {
 	InputSchema map[string]any `json:"input_schema"`
 }
 
+type anthropicThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+}
+
 type anthropicRequest struct {
 	Model     string             `json:"model"`
 	MaxTokens int                `json:"max_tokens"`
@@ -78,9 +113,7 @@ type anthropicRequest struct {
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []anthropicTool    `json:"tools,omitempty"`
 	Stream    bool               `json:"stream"`
-	// The shared history stores text and client tool calls, not signed thinking
-	// blocks. Explicitly disable thinking instead of losing required signatures.
-	Thinking     map[string]string `json:"thinking"`
+	Thinking     *anthropicThinking `json:"thinking"`
 	OutputConfig map[string]string `json:"output_config,omitempty"`
 }
 
@@ -103,10 +136,21 @@ func responseToolInput(raw json.RawMessage) (json.RawMessage, error) {
 }
 
 func (c *Client) newAnthropicRequest(messages []model.Message, tools []model.ToolDefinition, stream bool) (anthropicRequest, error) {
+	thinkingType := c.cfg.ThinkingType
+	if thinkingType == "" {
+		thinkingType = config.ThinkingTypeDisabled
+	}
 	request := anthropicRequest{Model: c.cfg.Model, MaxTokens: c.cfg.MaxOutputTokens, Stream: stream,
-		Messages: []anthropicMessage{}, Thinking: map[string]string{"type": "disabled"}}
+		Messages: []anthropicMessage{}}
 	if request.MaxTokens <= 0 {
 		return request, fmt.Errorf("Anthropic max_output_tokens must be positive")
+	}
+	if err := config.ValidateThinking(c.cfg); err != nil {
+		return request, err
+	}
+	request.Thinking = &anthropicThinking{Type: thinkingType}
+	if thinkingType == config.ThinkingTypeEnabled {
+		request.Thinking.BudgetTokens = c.cfg.ThinkingBudgetTokens
 	}
 	if c.cfg.ReasoningEffort != "" {
 		request.OutputConfig = map[string]string{"effort": c.cfg.ReasoningEffort}
@@ -145,19 +189,47 @@ func (c *Client) newAnthropicRequest(messages []model.Message, tools []model.Too
 			return request, fmt.Errorf("unsupported Anthropic message role %q", message.Role)
 		}
 		var blocks []anthropicBlock
-		if message.Content != "" {
-			blocks = append(blocks, anthropicBlock{Type: "text", Text: message.Content})
-		}
-		for _, call := range message.ToolCalls {
-			if message.Role != model.RoleAssistant || call.ID == "" || call.Function.Name == "" || pending[call.ID] {
-				return request, fmt.Errorf("invalid Anthropic tool_use")
+		if len(message.ProviderState) != 0 {
+			if message.Role != model.RoleAssistant {
+				return request, fmt.Errorf("Anthropic provider state is only valid for assistant messages")
 			}
-			input, err := toolInput(call.Function.Arguments)
+			stateBlocks, err := anthropicBlocksFromState(message.ProviderState)
 			if err != nil {
-				return request, fmt.Errorf("tool %s: %w", call.Function.Name, err)
+				return request, err
 			}
-			blocks = append(blocks, anthropicBlock{Type: "tool_use", ID: call.ID, Name: call.Function.Name, Input: input})
-			pending[call.ID] = true
+			for _, block := range stateBlocks {
+				if thinkingType == config.ThinkingTypeDisabled && (block.Type == "thinking" || block.Type == "redacted_thinking") {
+					continue
+				}
+				blocks = append(blocks, block)
+			}
+			for _, block := range blocks {
+				if block.Type != "tool_use" {
+					continue
+				}
+				if block.ID == "" || block.Name == "" || pending[block.ID] {
+					return request, fmt.Errorf("invalid Anthropic tool_use in provider state")
+				}
+				if _, err := responseToolInput(block.Input); err != nil {
+					return request, fmt.Errorf("tool %s: %w", block.Name, err)
+				}
+				pending[block.ID] = true
+			}
+		} else {
+			if message.Content != "" {
+				blocks = append(blocks, anthropicBlock{Type: "text", Text: message.Content})
+			}
+			for _, call := range message.ToolCalls {
+				if message.Role != model.RoleAssistant || call.ID == "" || call.Function.Name == "" || pending[call.ID] {
+					return request, fmt.Errorf("invalid Anthropic tool_use")
+				}
+				input, err := toolInput(call.Function.Arguments)
+				if err != nil {
+					return request, fmt.Errorf("tool %s: %w", call.Function.Name, err)
+				}
+				blocks = append(blocks, anthropicBlock{Type: "tool_use", ID: call.ID, Name: call.Function.Name, Input: input})
+				pending[call.ID] = true
+			}
 		}
 		appendBlocks(message.Role, blocks)
 	}
@@ -265,6 +337,8 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []model.Message
 		case "text":
 			seen = true
 			content.WriteString(block.Text)
+		case "thinking", "redacted_thinking":
+			seen = true
 		case "tool_use":
 			if block.ID == "" || block.Name == "" || ids[block.ID] {
 				return nil, nil, fmt.Errorf("invalid Anthropic tool_use response")
@@ -285,6 +359,11 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []model.Message
 		return nil, nil, fmt.Errorf("Anthropic tool response ended with inconsistent stop_reason %q", decoded.StopReason)
 	}
 	message.Content = content.String()
+	state, err := anthropicStateFromBlocks(decoded.Content)
+	if err != nil {
+		return nil, nil, err
+	}
+	message.ProviderState = state
 	var usage *model.UsageInfo
 	if tokens := decoded.Usage.tokens(); tokens != nil {
 		usage = &model.UsageInfo{PromptTokens: tokens.PromptTokens, CompletionTokens: tokens.CompletionTokens, TotalTokens: tokens.TotalTokens}

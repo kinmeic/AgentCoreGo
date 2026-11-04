@@ -197,9 +197,18 @@ paths:
         '200': {description: Updated conversation}
     delete:
       tags: [conversations]
-      parameters: [{$ref: '#/components/parameters/ConversationID'}]
+      parameters:
+        - {$ref: '#/components/parameters/ConversationID'}
+        - name: permanent
+          in: query
+          required: false
+          description: Permanently delete the conversation and its directly related online database records instead of archiving it.
+          schema: {type: boolean, default: false}
       responses:
-        '200': {description: Soft archived}
+        '200': {description: Archived by default, or permanently deleted when permanent=true}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {description: Active conversation; stop its runs and wait for terminal status before retrying}
   /v1/conversations/{id}/logs:
     get:
       tags: [conversations]
@@ -622,8 +631,8 @@ components:
         tool_call_id: {type: string}
         request_id: {type: string}
         timestamp: {type: string, format: date-time}
-        type: {type: string}
-        content: {type: string}
+        type: {type: string, description: Event type; reasoning carries model reasoning deltas, while thinking only reports model-call status.}
+        content: {type: string, description: Visible chunk text or reasoning delta, according to type.}
         tool: {type: string}
         preview: {type: string}
         reply: {type: string}

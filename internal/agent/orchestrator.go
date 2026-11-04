@@ -341,6 +341,7 @@ func (o *Orchestrator) executeRun(ctx context.Context, run *model.Run, cp *Check
 		cp.PromptTokens, cp.ComplTokens, cp.TotalTokens = run.Usage.PromptTokens, run.Usage.CompletionTokens, run.Usage.TotalTokens
 		if len(response.ToolCalls) == 0 {
 			run.Reply = response.Content
+			run.ProviderState = response.ProviderState
 			return nil
 		}
 		for _, call := range response.ToolCalls {
@@ -351,7 +352,7 @@ func (o *Orchestrator) executeRun(ctx context.Context, run *model.Run, cp *Check
 		cp.Messages = append(cp.Messages, *response)
 		if err := o.store.AddLog(&model.ConversationLog{ConversationID: run.ConversationID, RunID: run.ID,
 			Role: model.RoleAssistant, Content: response.Content, ToolCalls: response.ToolCalls,
-			Status: "tool_calls", CreatedAt: time.Now()}); err != nil {
+			ProviderState: response.ProviderState, Status: "tool_calls", CreatedAt: time.Now()}); err != nil {
 			return fmt.Errorf("save assistant tool calls: %w", err)
 		}
 		cp.Pending = append([]model.ToolCall(nil), response.ToolCalls...)
@@ -389,15 +390,32 @@ func (o *Orchestrator) complete(ctx context.Context, cp *Checkpoint, stream bool
 	collector := newToolCallCollector()
 	usage := &model.UsageInfo{}
 	thinkFilter := &StreamingThinkFilter{}
+	var providerState json.RawMessage
+	emitSegment := func(segment ThinkSegment) error {
+		if segment.Reasoning {
+			if o.cfg.LLM.ExposeReasoning {
+				return emitter.emit(model.StreamEvent{Type: "reasoning", Content: segment.Text})
+			}
+			return nil
+		}
+		content.WriteString(segment.Text)
+		return emitter.emit(model.StreamEvent{Type: "chunk", Content: segment.Text})
+	}
 	for chunk := range chunks {
 		if chunk.Err != nil {
 			return nil, nil, chunk.Err
 		}
+		if chunk.Reasoning != "" && o.cfg.LLM.ExposeReasoning {
+			if err := emitter.emit(model.StreamEvent{Type: "reasoning", Content: chunk.Reasoning}); err != nil {
+				return nil, nil, err
+			}
+		}
+		if len(chunk.ProviderState) != 0 {
+			providerState = chunk.ProviderState
+		}
 		if chunk.Content != "" {
-			visible := thinkFilter.Process(chunk.Content)
-			if visible != "" {
-				content.WriteString(visible)
-				if err := emitter.emit(model.StreamEvent{Type: "chunk", Content: visible}); err != nil {
+			for _, segment := range thinkFilter.ProcessSegments(chunk.Content) {
+				if err := emitSegment(segment); err != nil {
 					return nil, nil, err
 				}
 			}
@@ -408,9 +426,8 @@ func (o *Orchestrator) complete(ctx context.Context, cp *Checkpoint, stream bool
 				CompletionTokens: chunk.Usage.CompletionTokens, TotalTokens: chunk.Usage.TotalTokens}
 		}
 	}
-	if tail := thinkFilter.Flush(); tail != "" {
-		content.WriteString(tail)
-		if err := emitter.emit(model.StreamEvent{Type: "chunk", Content: tail}); err != nil {
+	for _, segment := range thinkFilter.FlushSegments() {
+		if err := emitSegment(segment); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -418,7 +435,7 @@ func (o *Orchestrator) complete(ctx context.Context, cp *Checkpoint, stream bool
 	if len(calls) != len(collector.calls) {
 		return nil, nil, errors.New("stream ended with incomplete tool calls")
 	}
-	return &model.Message{Role: model.RoleAssistant, Content: content.String(), ToolCalls: calls}, usage, nil
+	return &model.Message{Role: model.RoleAssistant, Content: content.String(), ToolCalls: calls, ProviderState: providerState}, usage, nil
 }
 
 func (o *Orchestrator) executePendingTools(ctx context.Context, run *model.Run, cp *Checkpoint, interactive bool, emitter *runEmitter) error {
@@ -573,7 +590,7 @@ func (o *Orchestrator) completeRun(run *model.Run, emitter *runEmitter, cp *Chec
 	intent := classifyIntent(run.Reply)
 	if err := o.store.AddLog(&model.ConversationLog{ConversationID: run.ConversationID, RunID: run.ID,
 		Role: model.RoleAssistant, Content: run.Reply, Intent: intent, Actions: cp.Actions,
-		Status: "completed", PromptTokens: run.Usage.PromptTokens, CompletionTokens: run.Usage.CompletionTokens,
+		ProviderState: run.ProviderState, Status: "completed", PromptTokens: run.Usage.PromptTokens, CompletionTokens: run.Usage.CompletionTokens,
 		ContextTokens: run.Usage.TotalTokens, CreatedAt: time.Now()}); err != nil {
 		return o.failRun(run, emitter, cp, fmt.Errorf("save assistant response: %w", err), interactive)
 	}
@@ -753,7 +770,7 @@ func (o *Orchestrator) buildMessages(ctx context.Context, convID string, userMsg
 }
 
 func conversationLogMessage(entry *model.ConversationLog) model.Message {
-	return model.Message{Role: entry.Role, Content: entry.Content, ToolCalls: entry.ToolCalls, ToolCallID: entry.ToolCallID, IsError: entry.Role == model.RoleTool && entry.Status == "error"}
+	return model.Message{Role: entry.Role, Content: entry.Content, ToolCalls: entry.ToolCalls, ToolCallID: entry.ToolCallID, IsError: entry.Role == model.RoleTool && entry.Status == "error", ProviderState: entry.ProviderState}
 }
 
 func (o *Orchestrator) emergencyCompress(ctx context.Context, messages []model.Message) []model.Message {
@@ -793,6 +810,19 @@ func repairToolCallPairing(messages []model.Message) []model.Message {
 		result = append(result, message)
 	}
 	return result
+}
+
+// HasActiveConversation reports whether any run for the conversation is still
+// executing in memory, including runs that are finishing after a terminal state.
+func (o *Orchestrator) HasActiveConversation(conversationID string) bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	for _, candidate := range o.activeRuns {
+		if candidate.convID == conversationID {
+			return true
+		}
+	}
+	return false
 }
 
 // Stop interrupts all active runs for a conversation during replacement races.

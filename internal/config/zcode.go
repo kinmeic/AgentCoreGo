@@ -29,6 +29,7 @@ type PermissionConfig struct {
 	AllowedTools          []string `yaml:"allowedTools" json:"allowedTools"`
 	DisallowedTools       []string `yaml:"disallowedTools" json:"disallowedTools"`
 	AutoApproveHighRisk   bool     `yaml:"autoApproveHighRisk" json:"autoApproveHighRisk"`
+	AlwaysAskTerminal     bool     `yaml:"alwaysAskTerminal" json:"alwaysAskTerminal"`
 	AllowMediumRiskInAuto bool     `yaml:"allowMediumRiskInAuto" json:"allowMediumRiskInAuto"`
 }
 type StorageConfig struct {

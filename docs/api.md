@@ -49,14 +49,17 @@ data: {"schema_version":1,"event_id":"...","sequence":4,"conversation_id":"...",
 事件类型：
 
 - `conv_id`: 早期返回 conversation/run 标识。
-- `thinking`: 即将调用模型，`iteration` 从 1 开始。
-- `chunk`: 已过滤 `<think>` 的可见文本。
+- `thinking`: 即将调用模型，`iteration` 从 1 开始；仅表示状态。
+- `reasoning`: provider 返回的思考正文 delta，正文位于 `content`；不包进最终回答。
+- `chunk`: 可见回答文本，不包含独立 reasoning 或 `<think>` 中的思考正文。
 - `tool_call`, `tool.started`, `progress`: 工具生命周期；参数预览脱敏限长。
 - `approval.required`: 使用 `request_id` 调用审批接口。
 - `clarify`: 使用 conversation 调用 clarify 接口。
 - `file.changed`: 文件修改路径与操作。
 - `resumed`: checkpoint 恢复开始。
 - `done | error | cancelled`: 每个 run 的唯一成功/失败/取消终态。
+
+`llm.expose_reasoning: false` 时不产生 `reasoning` 事件。该事件与 `chunk` 一样先持久化再发送，因此可在 HTTP/SSE/WS replay 中读取；Anthropic signature、redacted data 和内部 provider state 不属于公开事件内容。
 
 每 15 秒发送 `: keep-alive` 注释。事件先持久化再发送，可用 `after=<sequence>` 诊断或补拉；使用 `GET /v1/runs/{id}/events/stream?after=<sequence>` 或 `Last-Event-ID` 重新订阅。SSE chat 被接受后断线不会取消任务；`X-Run-ID` 返回 run ID，`X-Command-ID` 可作为任务重试去重键。未指定时自动生成。显式 stop 才取消。同步 chat 和交互式 resume 保留原有请求生命周期。
 
@@ -67,13 +70,17 @@ data: {"schema_version":1,"event_id":"...","sequence":4,"conversation_id":"...",
 | GET | `/v1/conversations?source=&limit=&offset=` | 活跃会话 |
 | GET | `/v1/conversations/{id}` | 详情 |
 | PUT | `/v1/conversations/{id}` | `{"title":"..."}` |
-| DELETE | `/v1/conversations/{id}` | 软归档；归档后拒绝新 run |
+| DELETE | `/v1/conversations/{id}` | 默认软归档；`?permanent=true` 永久删除在线数据 |
 | GET | `/v1/conversations/{id}/logs` | 最新日志，时间正序 |
 | GET | `/v1/conversations/{id}/logs?before={logID}&limit=100` | 向历史翻页 |
 | GET | `/v1/conversations/{id}/logs?q=needle` | FTS5 或 LIKE 降级搜索 |
 | GET | `/v1/conversations/{id}/logs?format=jsonl` | NDJSON 导出 |
 
 满页响应的 `X-Next-Cursor` 是最早一条日志 ID，将它作为下一次 `before`。旧会话缺少完整 tool 状态时按 legacy 内容处理，不伪造工具历史。
+
+删除会话默认只归档并拒绝新 run。使用 `DELETE /v1/conversations/{id}?permanent=true` 可永久删除指定会话及其直接关联的在线数据库记录，包括消息、runs、事件、检查点、摘要和对应工作流记录。成功返回 `{"status":"deleted"}`；不存在返回 404；存在 `pending/running/waiting_clarification/waiting_approval` run 或内存中仍活跃的 run 时返回 409，应先停止并等待终态再重试。
+
+永久删除不影响工作区文件、全局记忆或独立 fork/子会话。数据库备份、SQLite WAL/历史页以及独立 model-io 遥测和导出文件不属于该接口的擦除范围；该接口不是覆盖所有副本的合规级安全擦除。
 
 ## 记忆
 

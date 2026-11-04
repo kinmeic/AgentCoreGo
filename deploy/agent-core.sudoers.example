@@ -1,0 +1,11 @@
+# EXAMPLE ONLY: review, adapt absolute paths, and install manually with visudo.
+# Nothing in this repository installs or activates this file.
+# Prefer a small set of exact commands and fixed arguments.
+
+# Allow only these specific service operations without a password.
+agent-core ALL=(root:root) NOPASSWD: /usr/bin/systemctl restart agent-core.service, /usr/bin/systemctl status agent-core.service
+
+# DANGER: the following grants unrestricted passwordless root. Anyone or anything
+# able to execute commands as agent-core can fully compromise the host.
+# Do not uncomment unless you explicitly accept that risk.
+# agent-core ALL=(root:root) NOPASSWD: ALL
