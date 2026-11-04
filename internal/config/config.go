@@ -57,31 +57,31 @@ type ServerConfig struct {
 	TerminalEnabled    bool     `yaml:"terminalEnabled" json:"terminalEnabled"`
 }
 type LLMConfig struct {
-	RequestTimeoutMs    int                `yaml:"-" json:"-"`
-	StreamIdleTimeoutMs int                `yaml:"-" json:"-"`
-	RetryBaseDelayMs    int                `yaml:"-" json:"-"`
-	RetryMaxDelayMs     int                `yaml:"-" json:"-"`
-	RetryBackoffFactor  float64            `yaml:"-" json:"-"`
-	HTTPProxy           string             `yaml:"-" json:"-"`
-	NoProxy             string             `yaml:"-" json:"-"`
-	CACertFile          string             `yaml:"-" json:"-"`
-	RetryJitter         bool               `yaml:"-" json:"-"`
-	APIFormat           string             `yaml:"api_format" json:"api_format"`
-	BaseURL             string             `yaml:"base_url" json:"base_url"`
-	APIKey              string             `yaml:"api_key" json:"api_key"`
-	Model               string             `yaml:"model" json:"model"`
-	ContextWindow       int                `yaml:"context_window" json:"context_window"`
-	MaxToolIterations   int                `yaml:"-" json:"-"`
-	MaxRetries          int                `yaml:"-" json:"-"`
-	Temperature         float64            `yaml:"-" json:"-"`
-	MaxOutputTokens     int                `yaml:"max_output_tokens" json:"max_output_tokens"`
-	MaxRunTokens        int                `yaml:"-" json:"-"`
-	RunTimeoutSeconds   int                `yaml:"-" json:"-"`
-	ReasoningEffort     string             `yaml:"reasoning_effort" json:"reasoning_effort"`
-	ExposeReasoning     bool               `yaml:"expose_reasoning" json:"expose_reasoning"`
-	ThinkingType        string             `yaml:"thinking_type" json:"thinking_type"`
-	ThinkingBudgetTokens int               `yaml:"thinking_budget_tokens" json:"thinking_budget_tokens"`
-	Fallbacks           []FallbackProvider `yaml:"fallbacks" json:"fallbacks"`
+	RequestTimeoutMs     int                `yaml:"-" json:"-"`
+	StreamIdleTimeoutMs  int                `yaml:"-" json:"-"`
+	RetryBaseDelayMs     int                `yaml:"-" json:"-"`
+	RetryMaxDelayMs      int                `yaml:"-" json:"-"`
+	RetryBackoffFactor   float64            `yaml:"-" json:"-"`
+	HTTPProxy            string             `yaml:"-" json:"-"`
+	NoProxy              string             `yaml:"-" json:"-"`
+	CACertFile           string             `yaml:"-" json:"-"`
+	RetryJitter          bool               `yaml:"-" json:"-"`
+	APIFormat            string             `yaml:"api_format" json:"api_format"`
+	BaseURL              string             `yaml:"base_url" json:"base_url"`
+	APIKey               string             `yaml:"api_key" json:"api_key"`
+	Model                string             `yaml:"model" json:"model"`
+	ContextWindow        int                `yaml:"context_window" json:"context_window"`
+	MaxToolIterations    int                `yaml:"-" json:"-"`
+	MaxRetries           int                `yaml:"-" json:"-"`
+	Temperature          float64            `yaml:"-" json:"-"`
+	MaxOutputTokens      int                `yaml:"max_output_tokens" json:"max_output_tokens"`
+	MaxRunTokens         int                `yaml:"-" json:"-"`
+	RunTimeoutSeconds    int                `yaml:"-" json:"-"`
+	ReasoningEffort      string             `yaml:"reasoning_effort" json:"reasoning_effort"`
+	ExposeReasoning      bool               `yaml:"expose_reasoning" json:"expose_reasoning"`
+	ThinkingType         string             `yaml:"thinking_type" json:"thinking_type"`
+	ThinkingBudgetTokens int                `yaml:"thinking_budget_tokens" json:"thinking_budget_tokens"`
+	Fallbacks            []FallbackProvider `yaml:"fallbacks" json:"fallbacks"`
 }
 type FallbackProvider struct {
 	Name          string  `yaml:"name" json:"name"`

@@ -23,9 +23,9 @@ const (
 
 // Message represents a single message in a conversation.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Role          string          `json:"role"`
+	Content       string          `json:"content"`
+	ToolCalls     []ToolCall      `json:"tool_calls,omitempty"`
 	ToolCallID    string          `json:"tool_call_id,omitempty"`
 	IsError       bool            `json:"is_error,omitempty"`
 	ProviderState json.RawMessage `json:"provider_state,omitempty"`
@@ -228,21 +228,21 @@ type Conversation struct {
 
 // ConversationLog represents a single log entry in a conversation.
 type ConversationLog struct {
-	ID               int64      `json:"id"`
-	ConversationID   string     `json:"conversation_id"`
-	RunID            string     `json:"run_id,omitempty"`
-	Role             string     `json:"role"`
-	Content          string     `json:"content"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"`
-	Status           string     `json:"status,omitempty"`
-	Intent           string     `json:"intent,omitempty"`
-	Actions         []Action        `json:"actions,omitempty"`
-	ProviderState   json.RawMessage `json:"-"`
-	PromptTokens     int        `json:"prompt_tokens,omitempty"`
-	CompletionTokens int        `json:"completion_tokens,omitempty"`
-	ContextTokens    int        `json:"context_tokens,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
+	ID               int64           `json:"id"`
+	ConversationID   string          `json:"conversation_id"`
+	RunID            string          `json:"run_id,omitempty"`
+	Role             string          `json:"role"`
+	Content          string          `json:"content"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	Status           string          `json:"status,omitempty"`
+	Intent           string          `json:"intent,omitempty"`
+	Actions          []Action        `json:"actions,omitempty"`
+	ProviderState    json.RawMessage `json:"-"`
+	PromptTokens     int             `json:"prompt_tokens,omitempty"`
+	CompletionTokens int             `json:"completion_tokens,omitempty"`
+	ContextTokens    int             `json:"context_tokens,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
 }
 
 // Memory represents an agent memory entry.

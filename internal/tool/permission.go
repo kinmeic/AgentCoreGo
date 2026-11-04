@@ -87,6 +87,11 @@ func (m *PermissionManager) Authorize(ctx context.Context, registered *Registere
 	if denied {
 		return fmt.Errorf("permission.disallowedTools denies %s", name)
 	}
+	switch mode {
+	case "plan", "build", "edit", "guarded", "yolo", "auto":
+	default:
+		return fmt.Errorf("permission denied in %s mode for %s", mode, name)
+	}
 	if mode == "guarded" && registered.Source == SourceBuiltin && name == "run_terminal" && !caps.ReadOnly {
 		caps.AlwaysAsk = true
 	}
@@ -106,7 +111,7 @@ func (m *PermissionManager) Authorize(ctx context.Context, registered *Registere
 	if allowed && mode != "auto" && mode != "plan" && !caps.AlwaysAsk {
 		decision = "allow"
 	}
-	if caps.AlwaysAsk && mode != "auto" {
+	if caps.AlwaysAsk && mode != "auto" && decision != "deny" {
 		decision = "ask"
 	}
 	if decision == "allow" {

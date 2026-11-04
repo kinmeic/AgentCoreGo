@@ -55,13 +55,13 @@ type anthropicStreamEvent struct {
 	Message      *anthropicResponse `json:"message"`
 	ContentBlock *anthropicBlock    `json:"content_block"`
 	Delta        struct {
-			Type        string `json:"type"`
-			Text        string `json:"text"`
-			Thinking    string `json:"thinking"`
-			Signature   string `json:"signature"`
-			PartialJSON string `json:"partial_json"`
-			StopReason  string `json:"stop_reason"`
-		} `json:"delta"`
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		Thinking    string `json:"thinking"`
+		Signature   string `json:"signature"`
+		PartialJSON string `json:"partial_json"`
+		StopReason  string `json:"stop_reason"`
+	} `json:"delta"`
 	Usage *anthropicUsage `json:"usage"`
 }
 
