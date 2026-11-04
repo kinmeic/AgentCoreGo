@@ -8,7 +8,7 @@ import (
 
 func TestProgressiveDiscoveryUpdatesVisibleDefinitions(t *testing.T) {
 	registry := NewRegistry()
-	for _, name := range []string{"read_file", "tool_search", "tool_describe"} {
+	for _, name := range []string{"read_file", "tool_search", "tool_describe", "skill"} {
 		if err := registry.Register(&testProvider{name: name, caps: Capabilities{ReadOnly: true}}, SourceBuiltin, "builtin"); err != nil {
 			t.Fatal(err)
 		}
@@ -21,10 +21,17 @@ func TestProgressiveDiscoveryUpdatesVisibleDefinitions(t *testing.T) {
 	}
 	state := NewDiscoveryState(nil, true, 5)
 	definitions := registry.ToolDefinitionsForRun(state)
+	skillVisible := false
 	for _, definition := range definitions {
 		if definition.Function.Name == "external_00" {
 			t.Fatal("undiscovered external tool was exposed")
 		}
+		if definition.Function.Name == "skill" {
+			skillVisible = true
+		}
+	}
+	if !skillVisible {
+		t.Fatal("skill tool was hidden behind progressive discovery")
 	}
 	search := NewToolSearchTool(registry)
 	ctx := WithExecutionInfo(context.Background(), ExecutionInfo{Discovery: state})

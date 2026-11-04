@@ -63,6 +63,7 @@ func CoreToolNames() []string {
 		"list_files",
 		"run_terminal",
 		"get_current_time",
+		"skill",
 		"clarify",
 		// Bridge tools are also always exposed
 		"tool_search",

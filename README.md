@@ -171,7 +171,11 @@ SSE 对话被接受后，断线不会取消任务；用 `X-Command-ID` 重试同
 
 ## SKILL 配置
 
-在工作区创建 `.zcode/skills/code-review/SKILL.md`：
+本仓库在 `.agents/skills` 内置六个从 ZCode 导入的项目技能：`docx`、`pdf`、`pptx`、`xlsx`、`visualize` 和 `skill-creator`。完整脚本、references、assets、模板与许可证均已保留；来源版本和本地适配见 [UPSTREAM.md](.agents/skills/UPSTREAM.md)。可直接使用 `/skill <name> [任务]`，例如 `/skill docx 创建一份项目周报`。
+
+这些技能不会自动安装 Python、Node、LibreOffice、Poppler、Playwright 等外部依赖，实际文档生成前需按各技能的环境检查说明准备依赖。四个 Office 技能不包含 ZCode 侧栏查看器或 MCP 服务；`visualize` 在 AgentCoreGo 中生成并链接 standalone HTML，不使用 ZCode Desktop 的 inline Gen UI。
+
+自定义技能可在工作区创建 `.zcode/skills/code-review/SKILL.md`：
 
 ```markdown
 ---
@@ -204,7 +208,7 @@ skill:
 
 ```bash
 ./agent-core skills
-./agent-core skills load --name code-review
+./agent-core skills --name code-review
 ./agent-core chat --message '/skill code-review 检查当前变更'
 ./agent-core trust review
 # 检查返回的声明和 digest 后授权
