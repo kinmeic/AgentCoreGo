@@ -3,6 +3,7 @@ package mcp
 import (
 	"agent-core/internal/security"
 	"agent-core/internal/tool"
+	"agent-core/internal/version"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -106,7 +107,7 @@ func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) (err error) {
 			m.recordFailure(conn, err)
 		}
 	}()
-	client := sdk.NewClient(&sdk.Implementation{Name: "agent-core", Version: "0.3.1"},
+	client := sdk.NewClient(&sdk.Implementation{Name: "agent-core", Version: version.Version},
 		&sdk.ClientOptions{Capabilities: &sdk.ClientCapabilities{}, KeepAlive: 30 * time.Second})
 	transport, command, err := m.transport(connCtx, cfg)
 	if err != nil {

@@ -2,6 +2,8 @@ name: ci
 
 on:
   push:
+    branches: ["**"]
+  workflow_call:
   pull_request:
 
 permissions:

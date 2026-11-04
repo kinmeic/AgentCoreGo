@@ -30,6 +30,8 @@
 
 ## 快速开始
 
+可从 [GitHub Releases](https://github.com/kinmeic/AgentCoreGo/releases) 下载 Linux、macOS、Windows 和 OpenWrt 预编译包。平台、校验方式和 Actions 发布流程见 [发版文档](docs/release.md)。
+
 ### 前置条件
 
 - Go **1.26.10 或更高版本**（最低版本与 `go.mod` 一致）

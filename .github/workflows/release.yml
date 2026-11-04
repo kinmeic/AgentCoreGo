@@ -1,0 +1,280 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (vMAJOR.MINOR.PATCH). Leave empty to build only."
+        type: string
+        required: false
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - name: Resolve build version
+        id: version
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          publish=false
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            tag="$GITHUB_REF_NAME"
+            publish=true
+          elif [[ -n "$REQUESTED_TAG" ]]; then
+            test "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH"
+            tag="$REQUESTED_TAG"
+            publish=true
+          else
+            tag=v0.0.0
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: ${{ matrix.platform }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - platform: macos-x86_64
+            runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - platform: macos-arm64
+            runner: macos-15
+            goos: darwin
+            goarch: arm64
+          - platform: windows-x86_64
+            runner: windows-2025
+            goos: windows
+            goarch: amd64
+          - platform: openwrt-x86_64
+            runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+            openwrt_arch: x86_64
+            sdk_path: x86/64
+            sdk_file: openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c
+          - platform: openwrt-aarch64_cortex-a53
+            runner: ubuntu-24.04
+            goos: linux
+            goarch: arm64
+            openwrt_arch: aarch64_cortex-a53
+            sdk_path: mvebu/cortexa53
+            sdk_file: openwrt-sdk-25.12.5-mvebu-cortexa53_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 25b81b6871ed2b42db45248c4ccb8ce6fc0bd1a402df1dab1b54380a537ab556
+    env:
+      RELEASE_TAG: ${{ needs.version.outputs.tag }}
+      RELEASE_PLATFORM: ${{ matrix.platform }}
+      CGO_ENABLED: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Install musl compiler
+        if: startsWith(matrix.platform, 'linux-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          echo "CC=musl-gcc" >> "$GITHUB_ENV"
+      - name: Install OpenWrt SDK dependencies
+        if: matrix.openwrt_arch != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd qemu-user
+      - name: Download and verify OpenWrt SDK
+        if: matrix.openwrt_arch != ''
+        shell: bash
+        env:
+          SDK_PATH: ${{ matrix.sdk_path }}
+          SDK_FILE: ${{ matrix.sdk_file }}
+          SDK_SHA256: ${{ matrix.sdk_sha256 }}
+        run: |
+          sdk="$RUNNER_TEMP/openwrt-sdk"
+          archive="$RUNNER_TEMP/openwrt-sdk.tar.zst"
+          curl --fail --location --retry 5 --output "$archive" \
+            "https://downloads.openwrt.org/releases/25.12.5/targets/$SDK_PATH/$SDK_FILE"
+          printf '%s  %s\n' "$SDK_SHA256" "$archive" | sha256sum --check --strict
+          mkdir "$sdk"
+          tar --zstd -xf "$archive" -C "$sdk" --strip-components=1
+          cc=$(find "$sdk/staging_dir" -path '*/bin/*-openwrt-linux-musl-gcc' -print -quit)
+          test -n "$cc" && test -x "$cc"
+          {
+            echo "OPENWRT_SDK=$sdk"
+            echo "CC=$cc"
+            echo "STAGING_DIR=$sdk/staging_dir"
+          } >> "$GITHUB_ENV"
+      - name: Build executable with SQLite
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p build
+          ldflags="-s -w -X agent-core/internal/version.Version=${RELEASE_TAG#v}"
+          binary=build/agent-core
+          case "$GOOS" in
+            linux) ldflags="$ldflags -linkmode=external -extldflags=-static" ;;
+            windows)
+              binary="$binary.exe"
+              ldflags="$ldflags -linkmode=external -extldflags=-static"
+              gcc --version
+              ;;
+          esac
+          go mod verify
+          go build -mod=readonly -trimpath -tags 'netgo osusergo sqlite_fts5' \
+            -ldflags "$ldflags" -o "$binary" ./cmd/agent-core
+          if [[ "$GOOS" == linux ]]; then
+            file "$binary"
+            readelf -lW "$binary" > build/elf-headers.txt
+            if grep -q 'INTERP' build/elf-headers.txt; then
+              echo "Expected a static executable" >&2
+              exit 1
+            fi
+          fi
+      - name: Smoke-test and package executable
+        shell: bash
+        run: |
+          case "$RELEASE_PLATFORM" in
+            windows-*)
+              python scripts/package-release.py build/agent-core.exe "$RELEASE_TAG" "$RELEASE_PLATFORM"
+              ;;
+            openwrt-aarch64_cortex-a53)
+              python3 scripts/package-release.py build/agent-core "$RELEASE_TAG" "$RELEASE_PLATFORM" \
+                --emulator qemu-aarch64 -cpu cortex-a53
+              ;;
+            *)
+              python3 scripts/package-release.py build/agent-core "$RELEASE_TAG" "$RELEASE_PLATFORM"
+              ;;
+          esac
+      - name: Build OpenWrt ipk and apk
+        if: matrix.openwrt_arch != ''
+        shell: bash
+        env:
+          OPENWRT_ARCH: ${{ matrix.openwrt_arch }}
+        run: |
+          bash scripts/package-openwrt.sh build/agent-core "$OPENWRT_ARCH" "${RELEASE_TAG#v}" "$OPENWRT_SDK"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-core-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Attest build provenance
+        if: needs.version.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+  publish:
+    name: Publish GitHub Release
+    if: needs.version.outputs.publish == 'true'
+    needs: [version, test, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: agent-core-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify expected packages and generate checksums
+        shell: bash
+        working-directory: release-assets
+        run: |
+          version=${RELEASE_TAG#v}
+          files=()
+          for platform in linux-x86_64 linux-arm64 macos-x86_64 macos-arm64 openwrt-x86_64 openwrt-aarch64_cortex-a53; do
+            files+=("agent-core-$RELEASE_TAG-$platform.tar.gz")
+          done
+          files+=("agent-core-$RELEASE_TAG-windows-x86_64.zip")
+          for arch in x86_64 aarch64_cortex-a53; do
+            files+=("agent-core_${version}-1_${arch}.ipk" "agent-core-${version}-r1_openwrt-25.12.5_${arch}.apk")
+          done
+          for file in "${files[@]}"; do
+            test -s "$file"
+          done
+          sha256sum "${files[@]}" > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Sign checksums if a minisign key is configured
+        shell: bash
+        working-directory: release-assets
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          if [[ -z "$MINISIGN_SECRET_KEY" ]]; then
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key" -m SHA256SUMS \
+            -t "AgentCoreGo $RELEASE_TAG SHA256SUMS"
+      - name: Attest checksum manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-assets/SHA256SUMS
+      - name: Publish verified packages
+        shell: bash
+        run: |
+          cat > release-notes.md <<'NOTES'
+          AgentCoreGo prebuilt packages for Linux, macOS, Windows x64, and OpenWrt.
+          Linux and OpenWrt executables are static and include SQLite.
+          OpenWrt has portable archives, legacy opkg .ipk packages, and OpenWrt 25.12.5 SDK .apk packages.
+          Verify your download against SHA256SUMS and with `gh attestation verify <file> --repo kinmeic/AgentCoreGo`.
+          NOTES
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --verify-tag --title "AgentCoreGo $RELEASE_TAG" --notes-file release-notes.md --generate-notes

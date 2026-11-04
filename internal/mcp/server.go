@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"agent-core/internal/tool"
+	"agent-core/internal/version"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,7 +26,7 @@ func (s *Server) ServeContext(ctx context.Context) error {
 	if s.transport != "stdio" {
 		return fmt.Errorf("unsupported transport: %s", s.transport)
 	}
-	server := sdk.NewServer(&sdk.Implementation{Name: "agent-core", Version: "0.3.1"}, nil)
+	server := sdk.NewServer(&sdk.Implementation{Name: "agent-core", Version: version.Version}, nil)
 	for _, registered := range s.registry.List() {
 		name := registered.Provider.Name()
 		if name == "tool_search" || name == "tool_describe" || !s.registry.IsToolEnabled(name) {

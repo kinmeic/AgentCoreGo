@@ -22,6 +22,7 @@ import (
 	"agent-core/internal/tool"
 	"agent-core/internal/tool/builtin"
 	"agent-core/internal/trust"
+	"agent-core/internal/version"
 	"agent-core/internal/workflow"
 	"agent-core/internal/workspace"
 	"context"
@@ -365,13 +366,13 @@ func printBanner(cfg config.Config) {
         __/ |                                    
        |___/                                     
 
-  Agent Core v1.0.0
+  Agent Core v%s
   Listen:    %s
   Model:     %s
   DB:        %s
   Workspace: %s
   Tools:     builtin + MCP + host callback
-`, cfg.Addr(), cfg.LLM.Model, cfg.Store.DBPath, cfg.Workspace.Path)
+`, version.Version, cfg.Addr(), cfg.LLM.Model, cfg.Store.DBPath, cfg.Workspace.Path)
 
 	fmt.Println(banner)
 }

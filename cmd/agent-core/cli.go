@@ -4,6 +4,7 @@ import (
 	"agent-core/internal/config"
 	"agent-core/internal/mcp"
 	"agent-core/internal/model"
+	"agent-core/internal/version"
 	"bufio"
 	"bytes"
 	"encoding/json"
@@ -18,8 +19,6 @@ import (
 	"strconv"
 	"strings"
 )
-
-const agentCoreVersion = "0.3.1"
 
 type apiClient struct {
 	baseURL string
@@ -84,7 +83,7 @@ func runCLI(args []string) (bool, int) {
 	var err error
 	switch args[0] {
 	case "version":
-		fmt.Println(agentCoreVersion)
+		fmt.Println(version.Version)
 		return true, 0
 	case "chat":
 		err = cliChat(args[1:])
@@ -404,7 +403,7 @@ func cliDoctor(args []string) error {
 		return err
 	}
 	executable, _ := os.Executable()
-	result := map[string]any{"version": agentCoreVersion, "go": runtime.Version(), "platform": runtime.GOOS + "/" + runtime.GOARCH, "executable": filepath.Clean(executable)}
+	result := map[string]any{"version": version.Version, "go": runtime.Version(), "platform": runtime.GOOS + "/" + runtime.GOARCH, "executable": filepath.Clean(executable)}
 	failed := false
 	if *configPath != "" {
 		cfg, _, err := loadEffectiveConfig(*configPath)
